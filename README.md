@@ -61,3 +61,7 @@ curl -sS http://localhost:8083/v1/users/u1/ledger
 - Usage: `POST /v1/credits/purchase`, `POST /v1/reservations`, `POST /v1/reservations/{id}/commit`, `POST /v1/reservations/{id}/release`, `GET /v1/users/{id}/balance`
 - LLM Proxy: `POST /v1/generate`
 - Ledger: `POST /v1/events`, `GET /v1/users/{id}/ledger`
+
+## License
+
+MIT. See `LICENSE`.
