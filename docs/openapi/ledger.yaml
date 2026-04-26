@@ -1,0 +1,274 @@
+openapi: 3.0.3
+info:
+  title: CreditProxy — Ledger Service
+  description: |
+    Append-only audit log for credit events. Backed by Postgres.
+
+    All writes are idempotent via `idempotency_key` — re-submitting the same
+    key returns the original row without creating a duplicate.
+
+    The gateway emits events automatically during the generate flow. Direct
+    calls to this service are typically for admin / debugging purposes.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8083
+    description: Local Docker stack
+
+tags:
+  - name: Events
+    description: Credit event log
+  - name: Health
+
+paths:
+  /v1/events:
+    post:
+      operationId: createEvent
+      summary: Append a credit event
+      description: |
+        Inserts a ledger event. Re-submitting a previously seen `idempotency_key`
+        is a no-op — the original row is returned unchanged.
+
+        ### Event types emitted by the gateway
+
+        | event_type | When |
+        |---|---|
+        | `credits_reserved` | Reservation created |
+        | `credits_committed` | Actual credits committed after LLM call |
+        | `credits_released` | Reservation released (e.g. LLM failure) |
+        | `commit_failed` | Commit endpoint returned an error |
+      tags:
+        - Events
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LedgerEventRequest'
+            examples:
+              reserved:
+                summary: credits_reserved
+                value:
+                  idempotency_key: order-abc-123:reserve
+                  user_id: u1
+                  reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                  event_type: credits_reserved
+                  credits: 75
+                  payload:
+                    prompt_tokens: 11
+                    estimated_total_tokens: 75
+              committed:
+                summary: credits_committed
+                value:
+                  idempotency_key: order-abc-123:commit
+                  user_id: u1
+                  reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                  event_type: credits_committed
+                  credits: 62
+                  payload:
+                    estimated_credits: 75
+                    actual_tokens:
+                      prompt_tokens: 11
+                      completion_tokens: 51
+                      total_tokens: 62
+                    model: gemini-2.0-flash
+              released:
+                summary: credits_released
+                value:
+                  idempotency_key: order-abc-123:release
+                  user_id: u1
+                  reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                  event_type: credits_released
+                  credits: 75
+                  payload:
+                    reason: llm_failure
+      responses:
+        '200':
+          description: Event appended (or existing event returned if idempotency_key already seen)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerEventResponse'
+              example:
+                id: 42
+                idempotency_key: order-abc-123:reserve
+                user_id: u1
+                reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                event_type: credits_reserved
+                credits: 75
+                created_at: '2026-04-26T12:00:00.000000000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/users/{user_id}/ledger:
+    get:
+      operationId: getUserLedger
+      summary: Get credit event history for a user
+      description: Returns the last 100 events for the user, ordered newest first.
+      tags:
+        - Events
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: u1
+      responses:
+        '200':
+          description: Event history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerHistoryResponse'
+              example:
+                events:
+                  - id: 43
+                    idempotency_key: order-abc-123:commit
+                    user_id: u1
+                    reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                    event_type: credits_committed
+                    credits: 62
+                    created_at: '2026-04-26T12:00:01.000000000Z'
+                  - id: 42
+                    idempotency_key: order-abc-123:reserve
+                    user_id: u1
+                    reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                    event_type: credits_reserved
+                    credits: 75
+                    created_at: '2026-04-26T12:00:00.000000000Z'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /healthz:
+    get:
+      operationId: ledgerHealth
+      summary: Health check
+      tags:
+        - Health
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+  schemas:
+    LedgerEventRequest:
+      type: object
+      required:
+        - idempotency_key
+        - user_id
+        - event_type
+        - credits
+      properties:
+        idempotency_key:
+          type: string
+          description: |
+            Unique key for this event. Gateway derives these as
+            `<client-key>:reserve`, `<client-key>:commit`, etc.
+          example: order-abc-123:reserve
+        user_id:
+          type: string
+          example: u1
+        reservation_id:
+          type: string
+          description: Associated reservation (omit for non-reservation events)
+          example: res_20260426T120000.000000000_a1b2c3d4
+        event_type:
+          type: string
+          enum:
+            - credits_reserved
+            - credits_committed
+            - credits_released
+            - commit_failed
+          example: credits_reserved
+        credits:
+          type: integer
+          format: int64
+          description: Credit amount associated with this event
+          example: 75
+        payload:
+          type: object
+          description: Arbitrary JSON metadata for this event
+          additionalProperties: true
+          example:
+            prompt_tokens: 11
+            estimated_total_tokens: 75
+
+    LedgerEventResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Auto-incrementing primary key
+          example: 42
+        idempotency_key:
+          type: string
+          example: order-abc-123:reserve
+        user_id:
+          type: string
+          example: u1
+        reservation_id:
+          type: string
+          example: res_20260426T120000.000000000_a1b2c3d4
+        event_type:
+          type: string
+          example: credits_reserved
+        credits:
+          type: integer
+          format: int64
+          example: 75
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-04-26T12:00:00.000000000Z'
+
+    LedgerHistoryResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEventResponse'
+
+  responses:
+    HealthOK:
+      description: Service is healthy
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [ok]
+          example:
+            status: ok
+
+    BadRequest:
+      description: Missing required fields
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: idempotency_key, user_id, and event_type are required
+
+    MethodNotAllowed:
+      description: Wrong HTTP method
+      content:
+        text/plain:
+          schema:
+            type: string
+
+    InternalServerError:
+      description: Database error
+      content:
+        text/plain:
+          schema:
+            type: string

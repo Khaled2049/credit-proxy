@@ -1,0 +1,79 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: creditproxy
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  usage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: usage
+    ports:
+      - "8081:8081"
+    environment:
+      USAGE_ADDR: ":8081"
+      REDIS_ADDR: "redis:6379"
+    depends_on:
+      - redis
+
+  llmproxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: llmproxy
+    ports:
+      - "8082:8082"
+    environment:
+      LLMPROXY_ADDR: ":8082"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
+      LLM_MOCK_MODE: "${LLM_MOCK_MODE:-true}"
+
+  ledger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: ledger
+    ports:
+      - "8083:8083"
+    environment:
+      LEDGER_ADDR: ":8083"
+      POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/creditproxy?sslmode=disable"
+    depends_on:
+      - postgres
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    ports:
+      - "8080:8080"
+    environment:
+      GATEWAY_ADDR: ":8080"
+      USAGE_SERVICE_URL: "http://usage:8081"
+      LLM_PROXY_URL: "http://llmproxy:8082"
+      LEDGER_SERVICE_URL: "http://ledger:8083"
+    depends_on:
+      - usage
+      - llmproxy
+      - ledger
+
+volumes:
+  pgdata:

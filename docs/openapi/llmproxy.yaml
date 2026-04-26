@@ -1,0 +1,205 @@
+openapi: 3.0.3
+info:
+  title: CreditProxy — LLM Proxy
+  description: |
+    Internal service that wraps the Gemini API. Called only by the gateway —
+    not exposed to external clients in production.
+
+    When `LLM_MOCK_MODE=true` (the default) or `GEMINI_API_KEY` is empty,
+    all calls return a canned mock response with the model set to `mock-gemini`.
+    Token counts are estimated as `ceil(len(text) / 4)` in both modes.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8082
+    description: Local Docker stack
+
+tags:
+  - name: Generation
+  - name: Health
+
+paths:
+  /v1/generate:
+    post:
+      operationId: llmGenerate
+      summary: Generate text via Gemini (or mock)
+      description: |
+        Calls the Gemini `generateContent` API and returns the text output
+        with estimated token usage. When operating in mock mode, returns
+        `"Mock response to: <prompt>"` immediately without any API call.
+
+        The `force_mock` field overrides the service-level `LLM_MOCK_MODE`
+        setting on a per-request basis.
+      tags:
+        - Generation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LLMGenerateRequest'
+            examples:
+              mock:
+                summary: Mock response (default)
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic chapter opening.
+                  max_output_tokens: 120
+                  force_mock: true
+              real:
+                summary: Real Gemini call
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic chapter opening.
+                  max_output_tokens: 120
+                  temperature: 0.8
+                  force_mock: false
+      responses:
+        '200':
+          description: Text generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMGenerateResponse'
+              examples:
+                mock:
+                  summary: Mock response
+                  value:
+                    output: 'Mock response to: Write a dramatic chapter opening.'
+                    model: mock-gemini
+                    usage:
+                      prompt_tokens: 7
+                      completion_tokens: 12
+                      total_tokens: 19
+                real:
+                  summary: Gemini response
+                  value:
+                    output: The stars burned cold above the wreckage of New Avalon...
+                    model: gemini-2.0-flash
+                    usage:
+                      prompt_tokens: 7
+                      completion_tokens: 14
+                      total_tokens: 21
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '502':
+          description: Gemini API returned a non-2xx response
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: 'gemini status 429: rate limit exceeded'
+
+  /healthz:
+    get:
+      operationId: llmHealth
+      summary: Health check
+      tags:
+        - Health
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+  schemas:
+    LLMGenerateRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        user_id:
+          type: string
+          description: Passed through from the gateway for tracing purposes
+          example: u1
+        prompt:
+          type: string
+          example: Write a dramatic chapter opening.
+        max_output_tokens:
+          type: integer
+          format: int64
+          description: Forwarded to Gemini generationConfig. Defaults to 256.
+          default: 256
+          minimum: 1
+          example: 120
+        temperature:
+          type: number
+          format: float
+          description: Forwarded to Gemini generationConfig. Defaults to 0.7.
+          default: 0.7
+          minimum: 0
+          maximum: 2
+          example: 0.8
+        force_mock:
+          type: boolean
+          description: Return a mock response even if a real API key is configured
+          default: false
+        reservation_id:
+          type: string
+          description: Passed through from the gateway for tracing purposes
+        idempotency_key:
+          type: string
+          description: Passed through from the gateway for tracing purposes
+
+    LLMGenerateResponse:
+      type: object
+      properties:
+        output:
+          type: string
+          description: Generated text
+          example: The stars burned cold above the wreckage...
+        model:
+          type: string
+          description: Model identifier. Set to `mock-gemini` in mock mode.
+          example: gemini-2.0-flash
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
+
+    TokenUsage:
+      type: object
+      description: |
+        Estimated token counts using `ceil(len(text) / 4)`. Not exact — a
+        real tokenizer is intentionally omitted to keep the service dependency-free.
+      properties:
+        prompt_tokens:
+          type: integer
+          format: int64
+          example: 7
+        completion_tokens:
+          type: integer
+          format: int64
+          example: 14
+        total_tokens:
+          type: integer
+          format: int64
+          example: 21
+
+  responses:
+    HealthOK:
+      description: Service is healthy
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [ok]
+          example:
+            status: ok
+
+    BadRequest:
+      description: Missing or invalid request fields
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: prompt is required
+
+    MethodNotAllowed:
+      description: Wrong HTTP method
+      content:
+        text/plain:
+          schema:
+            type: string

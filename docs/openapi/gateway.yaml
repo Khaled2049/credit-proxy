@@ -1,0 +1,238 @@
+openapi: 3.0.3
+info:
+  title: CreditProxy — Gateway
+  description: |
+    Public-facing API. Orchestrates credit reservation, LLM generation, and ledger
+    audit events in a single call. All other services are internal.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local Docker stack
+
+tags:
+  - name: Generation
+    description: Credit-metered LLM text generation
+  - name: Health
+
+paths:
+  /v1/generate:
+    post:
+      operationId: generate
+      summary: Generate text (credit-metered)
+      description: |
+        Reserves credits, calls the LLM proxy, then commits (or releases) the
+        reservation based on actual token usage. Ledger events are emitted
+        fire-and-forget at each stage.
+
+        The `Idempotency-Key` header deduplicates ledger events — re-sending the
+        same key re-uses the same reservation context. If omitted, a key is
+        auto-generated.
+      tags:
+        - Generation
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRequest'
+            examples:
+              basic:
+                summary: Basic generation
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic opening scene for a space opera.
+                  max_output_tokens: 200
+              mock_override:
+                summary: Force mock response
+                value:
+                  user_id: u1
+                  prompt: Hello world
+                  max_output_tokens: 50
+                  force_mock: true
+      responses:
+        '200':
+          description: Generation succeeded and credits committed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateResponse'
+              example:
+                reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                idempotency_key: order-abc-123
+                estimated_credits: 75
+                actual_credits: 62
+                response:
+                  output: The stars burned cold above the wreckage...
+                  model: gemini-2.0-flash
+                  usage:
+                    prompt_tokens: 11
+                    completion_tokens: 51
+                    total_tokens: 62
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/InsufficientCredits'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '409':
+          description: Commit reservation failed (conflict)
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: commit reservation failed upstream status 409
+        '502':
+          description: LLM proxy call failed
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: llm proxy failed upstream status 502
+
+  /healthz:
+    get:
+      operationId: gatewayHealth
+      summary: Health check
+      tags:
+        - Health
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-supplied deduplication key. Used to compose ledger event keys
+        (`<key>:reserve`, `<key>:commit`, `<key>:release`). Auto-generated
+        if omitted.
+      schema:
+        type: string
+      example: order-abc-123
+
+  schemas:
+    GenerateRequest:
+      type: object
+      required:
+        - user_id
+        - prompt
+      properties:
+        user_id:
+          type: string
+          description: User whose credits are charged
+          example: u1
+        prompt:
+          type: string
+          description: Text prompt sent to the LLM
+          example: Write a dramatic opening scene for a space opera.
+        max_output_tokens:
+          type: integer
+          format: int64
+          description: Upper bound on completion length. Defaults to 256.
+          default: 256
+          minimum: 1
+          example: 200
+        temperature:
+          type: number
+          format: float
+          description: Sampling temperature. Defaults to 0.7.
+          default: 0.7
+          minimum: 0
+          maximum: 2
+          example: 0.7
+        force_mock:
+          type: boolean
+          description: Force mock LLM response regardless of LLM_MOCK_MODE setting
+          default: false
+
+    GenerateResponse:
+      type: object
+      properties:
+        reservation_id:
+          type: string
+          example: res_20260426T120000.000000000_a1b2c3d4
+        idempotency_key:
+          type: string
+          example: order-abc-123
+        estimated_credits:
+          type: integer
+          format: int64
+          description: Credits reserved before the LLM call (prompt tokens + max_output_tokens)
+          example: 75
+        actual_credits:
+          type: integer
+          format: int64
+          description: Credits actually committed (prompt + completion tokens used)
+          example: 62
+        response:
+          $ref: '#/components/schemas/LLMResponse'
+
+    LLMResponse:
+      type: object
+      properties:
+        output:
+          type: string
+          example: The stars burned cold above the wreckage...
+        model:
+          type: string
+          example: gemini-2.0-flash
+        usage:
+          $ref: '#/components/schemas/TokenUsage'
+
+    TokenUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+          format: int64
+          example: 11
+        completion_tokens:
+          type: integer
+          format: int64
+          example: 51
+        total_tokens:
+          type: integer
+          format: int64
+          example: 62
+
+  responses:
+    HealthOK:
+      description: Service is healthy
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [ok]
+          example:
+            status: ok
+
+    BadRequest:
+      description: Missing or invalid request fields
+      content:
+        text/plain:
+          schema:
+            type: string
+
+    InsufficientCredits:
+      description: User does not have enough credits
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: reserve credits upstream status 402 insufficient credits
+
+    MethodNotAllowed:
+      description: Wrong HTTP method
+      content:
+        text/plain:
+          schema:
+            type: string
