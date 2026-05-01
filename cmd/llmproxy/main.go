@@ -1,15 +1,12 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kh1011/creditproxy/pkg/contracts"
 	"github.com/kh1011/creditproxy/pkg/httpx"
@@ -18,21 +15,22 @@ import (
 )
 
 type server struct {
-	apiKey    string
-	model     string
-	useMock   bool
-	http      *http.Client
-	userAgent string
+	provider Provider
+	mock     *MockProvider
 }
 
 func main() {
 	addr := getenv("LLMPROXY_ADDR", ":8082")
+
+	provider, err := newProvider()
+	if err != nil {
+		log.Fatalf("configure provider: %v", err)
+	}
+	log.Printf("llmproxy using provider: %s", provider.Name())
+
 	s := &server{
-		apiKey:    os.Getenv("GEMINI_API_KEY"),
-		model:     getenv("GEMINI_MODEL", "gemini-2.0-flash"),
-		useMock:   strings.EqualFold(getenv("LLM_MOCK_MODE", "true"), "true"),
-		http:      httpx.NewHTTPClient(30),
-		userAgent: "creditproxy-llmproxy/1.0",
+		provider: provider,
+		mock:     &MockProvider{},
 	}
 
 	mux := http.NewServeMux()
@@ -43,11 +41,85 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
+// newProvider selects and constructs the configured LLM provider.
+//
+// Selection order:
+//  1. LLM_PROVIDER env var ("gemini", "mock")
+//  2. LLM_MOCK_MODE=true → mock
+//  3. GEMINI_API_KEY set → gemini
+//  4. default → mock
+//
+// To add a new provider: add a case here and implement the Provider interface.
+func newProvider() (Provider, error) {
+	explicit := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_PROVIDER")))
+	mockMode := strings.EqualFold(getenv("LLM_MOCK_MODE", "true"), "true")
+	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+
+	name := explicit
+	if name == "" {
+		switch {
+		case mockMode || apiKey == "":
+			name = "mock"
+		default:
+			name = "gemini"
+		}
+	}
+
+	switch name {
+	case "mock":
+		return &MockProvider{}, nil
+
+	case "gemini":
+		if apiKey == "" {
+			return nil, fmt.Errorf("LLM_PROVIDER=gemini requires GEMINI_API_KEY")
+		}
+		return &GeminiProvider{
+			apiKey:    apiKey,
+			model:     getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+			client:    httpx.NewHTTPClient(time.Duration(30) * time.Second),
+			userAgent: "creditproxy-llmproxy/" + version.Version,
+		}, nil
+
+	case "openai":
+		if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
+			return nil, fmt.Errorf("LLM_PROVIDER=openai requires OPENAI_API_KEY")
+		}
+		return &OpenAIProvider{
+			apiKey:  strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
+			model:   getenv("OPENAI_MODEL", "gpt-4o-mini"),
+			baseURL: getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			client:  httpx.NewHTTPClient(time.Duration(30) * time.Second),
+		}, nil
+
+	case "anthropic":
+		if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
+			return nil, fmt.Errorf("LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY")
+		}
+		return &AnthropicProvider{
+			apiKey:  strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
+			model:   getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+			baseURL: getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
+			client:  httpx.NewHTTPClient(time.Duration(30) * time.Second),
+		}, nil
+
+	case "ollama":
+		return &OllamaProvider{
+			baseURL: getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+			model:   getenv("OLLAMA_MODEL", "llama3"),
+			client:  httpx.NewHTTPClient(time.Duration(120) * time.Second),
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown LLM_PROVIDER %q — supported: gemini, openai, anthropic, ollama, mock", name)
+	}
+}
+
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
-		"version": version.Version,
-		"commit":  version.Commit,
+		"status":   "ok",
+		"version":  version.Version,
+		"commit":   version.Commit,
+		"provider": s.provider.Name(),
 	})
 }
 
@@ -72,77 +144,32 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		req.Temperature = 0.7
 	}
 
-	var output string
-	var err error
-	model := s.model
-	useMock := req.ForceMock || s.useMock || s.apiKey == ""
-	if useMock {
-		model = "mock-gemini"
-		output = fmt.Sprintf("Mock response to: %s", req.Prompt)
-	} else {
-		output, err = s.callGemini(r, req.Prompt, req.MaxOutputTokens, req.Temperature)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
+	p := s.provider
+	if req.ForceMock {
+		p = s.mock
+	}
+
+	result, err := p.Generate(r.Context(), GenerateOpts{
+		Prompt:          req.Prompt,
+		MaxOutputTokens: req.MaxOutputTokens,
+		Temperature:     req.Temperature,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
 
 	promptTokens := tokens.Estimate(req.Prompt)
-	completionTokens := tokens.Estimate(output)
+	completionTokens := tokens.Estimate(result.Output)
 	httpx.WriteJSON(w, http.StatusOK, contracts.GenerateResponse{
-		Output: output,
-		Model:  model,
+		Output: result.Output,
+		Model:  result.Model,
 		Usage: contracts.GenerateUsage{
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			TotalTokens:      promptTokens + completionTokens,
 		},
 	})
-}
-
-func (s *server) callGemini(r *http.Request, prompt string, maxOutputTokens int64, temperature float64) (string, error) {
-	endpoint := "https://generativelanguage.googleapis.com/v1beta/models/" + url.PathEscape(s.model) + ":generateContent?key=" + url.QueryEscape(s.apiKey)
-	body := map[string]any{
-		"contents": []map[string]any{
-			{"parts": []map[string]string{{"text": prompt}}},
-		},
-		"generationConfig": map[string]any{
-			"maxOutputTokens": maxOutputTokens,
-			"temperature":     temperature,
-		},
-	}
-	b, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(b))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", s.userAgent)
-	resp, err := s.http.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("gemini status %d: %s", resp.StatusCode, string(msg))
-	}
-	var gr struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
-		return "", err
-	}
-	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("gemini returned no candidates")
-	}
-	return gr.Candidates[0].Content.Parts[0].Text, nil
 }
 
 func getenv(key, fallback string) string {
