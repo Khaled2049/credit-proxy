@@ -32,3 +32,10 @@ go.work.sum
 .vscode/
 *.swp
 *.swo
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+tfplan

@@ -71,14 +71,15 @@ With `cpu_idle = true`, Cloud Run does not charge for CPU while the container is
 
 Cloud Run's default is 80 concurrent requests per instance. For gateway/usage/ledger (fast operations: milliseconds) this is fine. For llmproxy, each request is an outbound LLM call that can take 5–30 seconds. If 80 requests queued behind a slow LLM call, they would all time out. Capping at 10 means Cloud Run scales out to a new instance sooner, preventing head-of-line blocking.
 
-### Internal services locked to INGRESS_TRAFFIC_INTERNAL_ONLY
+### All services locked to INGRESS_TRAFFIC_INTERNAL_ONLY
 
-usage, llmproxy, and ledger cannot be reached from the public internet at the network layer. Only gateway is public. This means:
+All four services — including the gateway — are `INGRESS_TRAFFIC_INTERNAL_ONLY`. None are reachable from the public internet. This means:
 
-- Even if someone discovers the internal Cloud Run URLs, they cannot call them directly.
-- The attack surface is limited to one endpoint (gateway).
+- The gateway can only be called by `novelsync-agents-run@story-6f89f.iam.gserviceaccount.com` (enforced by the IAM binding in `main.tf`).
+- Internal services (usage, llmproxy, ledger) can only be called by `credit-proxy-run@story-6f89f.iam.gserviceaccount.com` (the shared Cloud Run SA).
+- Even if someone discovers any Cloud Run URL, the request is rejected at the network layer before IAM is evaluated.
 
-However, `INGRESS_TRAFFIC_INTERNAL_ONLY` is a network restriction, not an IAM authentication check. Cloud Run IAM is still enforced — callers still need a valid identity token. That is why `pkg/httpx/httpx.go` was modified to attach an OIDC token. The gateway's service account (`credit-proxy-run`) is granted `roles/run.invoker` on each internal service, so its token is accepted.
+`INGRESS_TRAFFIC_INTERNAL_ONLY` is a network restriction, not an IAM authentication check — both layers are enforced. That is why `pkg/httpx/httpx.go` was modified to attach an OIDC token on outbound calls, and `novelsync-agents/agents/storyAgent/llm_provider.py` was modified to do the same when calling the gateway.
 
 ### One shared service account for all services
 
@@ -349,7 +350,7 @@ The `deploy.yml` workflow runs automatically. It:
 
 8. Runs `terraform apply` to converge GCP state. On first run this creates IAM bindings and all 4 Cloud Run services. On subsequent runs it updates only what has changed (typically just the image tags).
 
-9. Health-checks the gateway's `/health` endpoint with 5 retries and 15-second waits. The internal services (usage, llmproxy, ledger) are `INGRESS_TRAFFIC_INTERNAL_ONLY` — they are not reachable from the GitHub runner, so only gateway is checked externally. Cloud Run's startup probe validates the internal services before they receive traffic.
+9. Verifies the deployment via `gcloud run services describe credit-proxy-gateway`. All services are `INGRESS_TRAFFIC_INTERNAL_ONLY` — none are reachable from the GitHub runner via HTTP. The `gcloud` Admin API call confirms the service's readiness condition. Cloud Run's startup probe on each service blocks traffic until the container is healthy, so `terraform apply` only returns after revisions are serving.
 
 ### On every pull request to `main`
 
@@ -369,18 +370,40 @@ The deploy workflow ignores pushes where only `.md` files, `LICENSE`, or `.gitig
 
 ## 7. Verifying the deployment
 
-### Gateway (public — call directly)
+All services are `INGRESS_TRAFFIC_INTERNAL_ONLY` — none can be reached via `curl` from your laptop directly. Use `gcloud run services proxy` to open an authenticated local tunnel to any service.
+
+### All services (use Cloud Run proxy)
 
 ```bash
 # Get the gateway URL from Terraform output
 GW=$(cd terraform && terraform output -raw gateway_url)
+```
 
-# Health check
-curl "${GW}/health"
+Open a proxy to each service you want to test in a separate terminal:
+
+```bash
+# Terminal 1 — gateway
+gcloud run services proxy credit-proxy-gateway \
+  --region=us-central1 --project=story-6f89f --port=8080
+
+# Terminal 2 — usage service
+gcloud run services proxy credit-proxy-usage \
+  --region=us-central1 --project=story-6f89f --port=8091
+
+# Terminal 3 — ledger service
+gcloud run services proxy credit-proxy-ledger \
+  --region=us-central1 --project=story-6f89f --port=8093
+```
+
+Then from another terminal:
+
+```bash
+# Health check gateway
+curl http://localhost:8080/health
 # Expected: {"status":"ok","version":"...","commit":"..."}
 
 # End-to-end test with mock LLM (no API key needed)
-curl -X POST "${GW}/v1/generate" \
+curl -X POST http://localhost:8080/v1/generate \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "smoke-test",
@@ -399,21 +422,9 @@ curl -X POST "${GW}/v1/generate" \
 # }
 ```
 
-### Internal services (use Cloud Run proxy)
+### Usage and ledger (also via proxy)
 
-Internal services are not reachable directly from your laptop. Use `gcloud run services proxy` which opens an authenticated local tunnel.
-
-```bash
-# Terminal 1 — proxy to usage service
-gcloud run services proxy credit-proxy-usage \
-  --region=us-central1 --project=story-6f89f --port=8091
-
-# Terminal 2 — proxy to ledger service
-gcloud run services proxy credit-proxy-ledger \
-  --region=us-central1 --project=story-6f89f --port=8093
-```
-
-Then in a third terminal:
+With the proxies open from above (ports 8091 and 8093):
 
 ```bash
 # Check credits were created for smoke-test user (new users get 10,000 free credits)
@@ -443,7 +454,7 @@ GATEWAY_URL=$GW go test -v -tags smoke ./tests/smoke/
 
 ### Deployment checklist
 
-- [ ] `GET /health` on gateway returns `{"status":"ok"}`
+- [ ] `GET /health` via `gcloud run services proxy` returns `{"status":"ok"}`
 - [ ] `POST /v1/generate` with `force_mock: true` returns 200 and `actual_credits > 0`
 - [ ] Usage balance for smoke-test user decremented correctly
 - [ ] Ledger shows `credits_reserved` and `credits_committed` events

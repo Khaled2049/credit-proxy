@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - '**.md'
-      - 'LICENSE'
-      - '.gitignore'
+      - "**.md"
+      - "LICENSE"
+      - ".gitignore"
   workflow_dispatch:
 
 concurrency:
@@ -147,20 +147,12 @@ jobs:
         working-directory: ./terraform
         run: echo "gateway_url=$(terraform output -raw gateway_url)" >> $GITHUB_OUTPUT
 
-      - name: Health check gateway
+      - name: Verify deployment via Cloud Run API
         run: |
-          URL="${{ steps.get_url.outputs.gateway_url }}/health"
-          echo "Checking $URL..."
-          for i in 1 2 3 4 5; do
-            if curl -sf --max-time 15 "$URL" > /dev/null; then
-              echo "Health check passed on attempt $i"
-              exit 0
-            fi
-            echo "Attempt $i failed, waiting 15s..."
-            sleep 15
-          done
-          echo "Gateway health check failed after 5 attempts"
-          exit 1
+          gcloud run services describe credit-proxy-gateway \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format="value(status.conditions[0].status,status.conditions[0].type)"
 
       - name: Deployment Summary
         run: |

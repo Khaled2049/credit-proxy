@@ -421,7 +421,7 @@ resource "google_cloud_run_v2_service" "gateway" {
   name     = "credit-proxy-gateway"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
   template {
     service_account = local.sa_email
@@ -505,11 +505,12 @@ resource "google_cloud_run_v2_service" "gateway" {
   ]
 }
 
-# Public access — gateway only
-resource "google_cloud_run_v2_service_iam_member" "gateway_public" {
+# Only novelsync-agents may invoke the gateway — no public internet access.
+# Both services are in the same GCP project so INGRESS_INTERNAL_ONLY allows the call.
+resource "google_cloud_run_v2_service_iam_member" "gateway_agents_invoker" {
   name     = google_cloud_run_v2_service.gateway.name
   location = var.region
   project  = var.project_id
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = "serviceAccount:novelsync-agents-run@${var.project_id}.iam.gserviceaccount.com"
 }

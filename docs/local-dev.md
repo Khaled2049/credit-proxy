@@ -29,7 +29,7 @@ Requires Redis and/or Postgres running locally. Override addresses via env vars.
 
 ```bash
 # usage service (needs Redis)
-REDIS_ADDR=localhost:6379 make run-usage
+REDIS_URL=redis://localhost:6379 make run-usage
 
 # ledger service (needs Postgres)
 POSTGRES_DSN=postgres://postgres:postgres@localhost:5432/creditproxy?sslmode=disable make run-ledger
@@ -94,7 +94,7 @@ Without `GEMINI_API_KEY`, llmproxy will error at startup when `LLM_PROVIDER=gemi
 | `LLM_PROXY_URL`       | `http://llmproxy:8082`                                       | gateway   |
 | `LEDGER_SERVICE_URL`  | `http://ledger:8083`                                         | gateway   |
 | `USAGE_ADDR`          | `:8081`                                                      | usage     |
-| `REDIS_ADDR`          | `redis:6379`                                                 | usage     |
+| `REDIS_URL`           | `redis://redis:6379`                                         | usage     |
 | `LLMPROXY_ADDR`       | `:8082`                                                      | llmproxy  |
 | `LLM_PROVIDER`        | `mock`                                                       | llmproxy  |
 | `GEMINI_API_KEY`      | `""`                                                         | llmproxy  |

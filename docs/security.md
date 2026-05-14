@@ -2,7 +2,7 @@
 
 This document describes the current security posture of creditProxy, known gaps, and a prioritized remediation backlog. It is updated as findings are addressed.
 
-> **Context:** creditProxy is currently designed for internal/demo use where the gateway is called only by trusted services (e.g. novelsync-agents running in the same VPC or behind Cloud Run IAM). The gaps below become critical if the gateway is ever exposed to the public internet or multi-tenant environments.
+> **Context:** In production (GCP), all four services are `INGRESS_TRAFFIC_INTERNAL_ONLY`. The gateway only accepts calls from `novelsync-agents-run@story-6f89f.iam.gserviceaccount.com`, enforced by Cloud Run IAM. Inter-service calls (gateway → usage/llmproxy/ledger) use OIDC identity tokens. Cloud Run provides TLS termination on all services. The gaps below apply to local docker-compose (no auth, plain HTTP) and any scenario where a service is inadvertently exposed beyond its intended caller.
 
 ---
 
@@ -29,6 +29,8 @@ Findings are grouped by severity. Severity reflects risk if creditProxy is reach
 **C1 — No authentication on any endpoint**
 The gateway (`POST /v1/generate`), usage service (`POST /v1/credits/purchase`, `POST /v1/reservations`), llmproxy (`POST /v1/generate`), and ledger (`POST /v1/events`, `GET /v1/users/{id}/ledger`) accept requests from any caller with no token, signature, or credential check. Any client that can reach the port can spend arbitrary users' credits, grant themselves free credits, call platform LLM keys directly, or read/write audit events.
 
+> **Production (GCP):** Partially mitigated. Cloud Run IAM restricts the gateway to the `novelsync-agents-run` SA only. Internal services (usage, llmproxy, ledger) require an OIDC token from the `credit-proxy-run` SA. No unauthenticated caller can reach any service from the public internet. Remaining gap: the application layer does not verify the caller's identity — any service holding a valid GCP identity token for the right SA can call any endpoint.
+
 **C2 — user_id is caller-supplied with no verification**
 The gateway and usage service trust the `user_id` field in the request body. A caller can impersonate any user, charge credits to another account, or drain another user's balance.
 
@@ -44,6 +46,8 @@ The gateway and usage service trust the `user_id` field in the request body. A c
 
 **C5 — No TLS on any service**
 All inter-service and client-to-gateway communication is plain HTTP. Secrets (BYOK API keys, prompts, user IDs) travel unencrypted.
+
+> **Production (GCP):** Resolved. Cloud Run terminates TLS on all services. All inter-service calls use `https://` Cloud Run URLs. Applies to local docker-compose only.
 
 **C6 — Gemini API key exposed in URL query string**
 `cmd/llmproxy/gemini.go` appends the Gemini key as `?key=...` in the request URL. Query strings are logged by proxies, firewalls, CDNs, and HTTP access logs, making the key easily extractable.
@@ -107,8 +111,8 @@ Work these roughly in order. Items marked with `*` are prerequisites for product
 
 ### Phase 1 — Must fix before any public exposure
 
-1. **`*` Add service-to-service auth on the gateway.**
-   Require a shared secret (`Authorization: Bearer <token>`) or mTLS between novelsync-agents and the gateway. Validate in `handleGenerate`. Reject all other callers with 401.
+1. **~~`*` Add service-to-service auth on the gateway.~~** ✅ Done (GCP)
+   Cloud Run IAM restricts the gateway to `novelsync-agents-run` SA. Internal services require OIDC tokens from `credit-proxy-run` SA. `pkg/httpx.PostJSON` and `agents/storyAgent/llm_provider.py` both attach identity tokens automatically on GCP. Local docker-compose remains unauthenticated.
 
 2. **`*` Remove host-port bindings for internal services.**
    In `docker-compose.yml`, remove `ports:` from `usage`, `llmproxy`, `redis`, and `postgres`. Only the gateway (`:8080`) should be reachable from the host. Internal services communicate over the Docker network.
@@ -122,8 +126,8 @@ Work these roughly in order. Items marked with `*` are prerequisites for product
    - `prompt` length ≤ 64 000 characters (or configurable `MAX_PROMPT_BYTES`)
    Return 400 if exceeded.
 
-5. **`*` Add TLS termination.**
-   Run the gateway behind a TLS-terminating proxy (Cloud Run, nginx, or `golang.org/x/crypto/acme/autocert`). Mark all inter-service traffic as internal-only.
+5. **~~`*` Add TLS termination.~~** ✅ Done (GCP)
+   Cloud Run terminates TLS on all services. All Cloud Run service URLs are `https://`. Applies to local docker-compose only.
 
 6. **`*` Move Gemini key to a request header.**
    In `cmd/llmproxy/gemini.go`, pass the key in the `X-Goog-Api-Key` header instead of the query string to keep it out of URL logs.

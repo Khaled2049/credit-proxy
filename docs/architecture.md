@@ -1,8 +1,10 @@
 # Architecture
 
-CreditProxy is a distributed system for credit-metered AI text generation. Clients interact with a single public gateway; the gateway orchestrates three internal services — usage (credit accounting), llmproxy (LLM calls), and ledger (audit trail).
+CreditProxy is a distributed system for credit-metered AI text generation. The gateway orchestrates three internal services — usage (credit accounting), llmproxy (LLM calls), and ledger (audit trail).
 
 ## System Overview
+
+### Local development (docker-compose)
 
 ```
                         ┌───────────────────────────────────────────────── ┐
@@ -26,14 +28,41 @@ Client ───────────────► │  │  Gateway  │�
                         └───────────────────────────────────────────────── ┘
 ```
 
+### Production (GCP Cloud Run)
+
+All four services are `INGRESS_TRAFFIC_INTERNAL_ONLY`. The gateway is not publicly reachable — only `novelsync-agents` (identified by its GCP service account) may invoke it. Inter-service calls use OIDC identity tokens verified by Cloud Run IAM.
+
+```
+novelsync-agents                creditProxy (GCP project: story-6f89f)
+(Cloud Run, same project)
+                                ┌──────────────────────────────────────────┐
+           HTTPS + OIDC token   │  ┌───────────┐      ┌───────────┐        │
+──────────────────────────────► │  │  Gateway  │─────►│  Usage    │◄─ Upstash Redis
+                                │  │ (internal)│OIDC  │ (internal)│        │
+                                │  └─────┬─────┘      └───────────┘        │
+                                │        │OIDC                              │
+                                │        ├────────────►┌───────────┐        │
+                                │        │             │ LLM Proxy │──► LLM APIs
+                                │        │             │ (internal)│        │
+                                │        │             └───────────┘        │
+                                │        │OIDC                              │
+                                │        └────────────►┌───────────┐        │
+                                │                      │  Ledger   │◄─ Neon Postgres
+                                │                      │ (internal)│        │
+                                │                      └───────────┘        │
+                                └──────────────────────────────────────────┘
+```
+
+See `docs/deploy.md` for the full GCP setup.
+
 ## Services
 
-| Service    | Port | Responsibility                                               | Backing Store      |
-| ---------- | ---- | ------------------------------------------------------------ | ------------------ |
-| `gateway`  | 8080 | Orchestrates the full generate flow; BYOK credit bypass      | —                  |
-| `usage`    | 8081 | Atomic credit reservation / commit / release                 | Redis 7            |
-| `llmproxy` | 8082 | Multi-provider LLM router (Gemini, Claude, OpenAI, Ollama, mock); per-request BYOK | External LLM APIs |
-| `ledger`   | 8083 | Append-only audit event log                                  | Postgres 16        |
+| Service    | Port (local) | Responsibility                                               | Backing Store      | GCP ingress |
+| ---------- | ------------ | ------------------------------------------------------------ | ------------------ | ----------- |
+| `gateway`  | 8080 | Orchestrates the full generate flow; BYOK credit bypass      | —                  | Internal only — `novelsync-agents-run` SA invoker |
+| `usage`    | 8081 | Atomic credit reservation / commit / release                 | Redis 7 (Upstash in prod) | Internal only |
+| `llmproxy` | 8082 | Multi-provider LLM router (Gemini, Claude, OpenAI, Ollama, mock); per-request BYOK | External LLM APIs | Internal only |
+| `ledger`   | 8083 | Append-only audit event log                                  | Postgres 16 (Neon in prod) | Internal only |
 
 Each service is a single Go binary compiled from `cmd/<name>/main.go`. All inter-service calls use plain HTTP JSON — no gRPC, no message queue.
 
