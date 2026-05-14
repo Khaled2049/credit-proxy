@@ -52,8 +52,14 @@ variable "ledger_image" {
   }
 }
 
+variable "gateway_min_instances" {
+  description = "Minimum Cloud Run instances for gateway (1 = always warm, avoids GFE routing loss on scale-to-zero)"
+  type        = number
+  default     = 1
+}
+
 variable "min_instances" {
-  description = "Minimum Cloud Run instances (0 = scale to zero)"
+  description = "Minimum Cloud Run instances for internal services (0 = scale to zero)"
   type        = number
   default     = 0
 }

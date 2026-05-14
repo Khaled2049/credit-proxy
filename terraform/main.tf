@@ -427,7 +427,7 @@ resource "google_cloud_run_v2_service" "gateway" {
     service_account = local.sa_email
 
     scaling {
-      min_instance_count = var.min_instances
+      min_instance_count = var.gateway_min_instances
       max_instance_count = var.max_instances
     }
 

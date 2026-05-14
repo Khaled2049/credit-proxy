@@ -57,11 +57,11 @@ Each of the four services (gateway, usage, llmproxy, ledger) is deployed as its 
 - Memory and CPU limits are tuned per service (llmproxy gets 512 MB because it processes larger payloads; the others get 256 MB).
 - If one service has a bug and crashes, the others keep running.
 
-### Scale to zero (min_instances = 0)
+### Gateway: min_instances = 1; internal services: min_instances = 0
 
-All four services are configured with `min_instance_count = 0`. When there is no traffic, Cloud Run terminates all instances and you pay nothing. The first request after a cold period will be slightly slower (cold start) while the container boots — typically 1–2 seconds for these Go binaries. This is the right trade-off at startup: zero idle cost.
+The three internal services (usage, llmproxy, ledger) are configured with `min_instance_count = 0` — they scale to zero when idle and pay nothing.
 
-If cold starts become unacceptable (e.g. the gateway is customer-facing and must always respond fast), set `min_instances = 1` on gateway only. That costs roughly $5–7/month more (one always-on 256 MB instance) but eliminates cold starts on the entry point.
+The gateway uses `min_instance_count = 1` (controlled by the `gateway_min_instances` variable, default 1). This is required for Cloud Run v2: when a Cloud Run v2 service scales to zero and back, GFE (Google's frontend) can lose its backend route mapping, causing all subsequent requests to return a Google 404 HTML page rather than being dispatched to the service. Keeping one gateway instance warm prevents this. At 256 MB with `cpu_idle = true`, the idle cost is approximately $2–4/month.
 
 ### cpu_idle = true
 
@@ -130,13 +130,14 @@ The GitHub Actions WIF service account has:
 
 | Component | Monthly cost | Notes |
 |---|---|---|
-| Cloud Run — 4 services | $0 | Free tier: 2M requests/month, 360K GB-seconds, 180K vCPU-seconds. Scale to zero means no idle cost. |
+| Cloud Run — gateway (1 warm instance) | ~$2–4 | One always-on 256 MB instance with `cpu_idle=true`. Memory billed continuously; CPU billed only during requests. Required to prevent Cloud Run v2 GFE routing loss on scale-to-zero. |
+| Cloud Run — usage, llmproxy, ledger | $0 | Scale to zero. Free tier: 2M requests/month, 360K GB-seconds, 180K vCPU-seconds. |
 | Neon (free tier) | $0 | Serverless Postgres, scales to zero. 0.5 GB storage, compute auto-pauses after 5 min idle. |
 | Upstash Redis free tier | $0 | 10,000 commands/day, 256 MB. Covers ~5,000 AI requests/day (2 Redis ops per request). |
 | Artifact Registry | $0 | Free 0.5 GB/month. 4 small Go images ≈ 20–30 MB total. |
 | Secret Manager | $0 | Free for first 6 active secret versions/month. |
 | GCS (Terraform state) | ~$0.02 | Shared bucket, negligible. |
-| **Total** | **~$0/month** | |
+| **Total** | **~$2–4/month** | |
 
 ### When traffic grows (above Cloud Run free tier)
 
@@ -460,16 +461,13 @@ By default `max_instances = 5`. To allow more concurrent requests, increase this
 
 ### Prevent cold starts on gateway
 
-Set `min_instances = 1` on gateway so one instance is always warm:
+Gateway already runs with `min_instances = 1` (the `gateway_min_instances` variable defaults to 1). This is required — Cloud Run v2 loses GFE backend routing when a service scales to zero and back, causing 404s from Google's frontend rather than your service. Do not set this to 0.
 
-```hcl
-# terraform/variables.tf
-variable "min_instances" {
-  default = 0  # change to 1 for gateway only
-}
+To revert to zero for cost savings in a dev environment:
+
+```bash
+terraform apply -var="gateway_min_instances=0" ...
 ```
-
-Or add a `min_instances_gateway` variable and set it separately for the gateway resource in `main.tf`.
 
 ### Increase memory / CPU for llmproxy
 
