@@ -25,7 +25,7 @@ func (g *GeminiProvider) Name() string { return "gemini/" + g.model }
 
 func (g *GeminiProvider) Generate(ctx context.Context, opts GenerateOpts) (GenerateResult, error) {
 	endpoint := "https://generativelanguage.googleapis.com/v1beta/models/" +
-		url.PathEscape(g.model) + ":generateContent?key=" + url.QueryEscape(g.apiKey)
+		url.PathEscape(g.model) + ":generateContent"
 
 	body := map[string]any{
 		"contents": []map[string]any{
@@ -44,6 +44,7 @@ func (g *GeminiProvider) Generate(ctx context.Context, opts GenerateOpts) (Gener
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", g.userAgent)
+	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.client.Do(req)
 	if err != nil {

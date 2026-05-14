@@ -1,6 +1,6 @@
 # API Reference
 
-All services speak JSON over HTTP. No authentication is implemented — this is a demo system.
+All services speak JSON over HTTP. No authentication is implemented.
 
 ---
 
@@ -12,9 +12,9 @@ Orchestrates the full credit-metered generation flow. Credits are reserved befor
 
 **Headers**
 
-| Header            | Required | Description                                          |
-|-------------------|----------|------------------------------------------------------|
-| `Content-Type`    | yes      | `application/json`                                   |
+| Header            | Required | Description                                                                     |
+| ----------------- | -------- | ------------------------------------------------------------------------------- |
+| `Content-Type`    | yes      | `application/json`                                                              |
 | `Idempotency-Key` | no       | Client-supplied key for deduplicating ledger events. Auto-generated if omitted. |
 
 **Request body**
@@ -25,17 +25,25 @@ Orchestrates the full credit-metered generation flow. Credits are reserved befor
   "prompt": "Write a dramatic opening scene for a space opera.",
   "max_output_tokens": 200,
   "temperature": 0.7,
-  "force_mock": false
+  "force_mock": false,
+  "byok_provider": "",
+  "byok_api_key": "",
+  "byok_model": ""
 }
 ```
 
-| Field               | Type    | Default | Description                                   |
-|---------------------|---------|---------|-----------------------------------------------|
-| `user_id`           | string  | —       | Required. User whose credits are charged.     |
-| `prompt`            | string  | —       | Required. Text sent to the LLM.               |
-| `max_output_tokens` | integer | 256     | Upper bound on completion length.             |
-| `temperature`       | float   | 0.7     | Sampling temperature (passed to Gemini).      |
-| `force_mock`        | bool    | false   | Override `LLM_MOCK_MODE`; use mock response.  |
+| Field               | Type    | Default | Description                                                                               |
+| ------------------- | ------- | ------- | ----------------------------------------------------------------------------------------- |
+| `user_id`           | string  | —       | Required. User whose credits are charged (or audited for BYOK).                           |
+| `prompt`            | string  | —       | Required. Text sent to the LLM.                                                           |
+| `max_output_tokens` | integer | 256     | Upper bound on completion length.                                                         |
+| `temperature`       | float   | 0.7     | Sampling temperature.                                                                     |
+| `force_mock`        | bool    | false   | Override `LLM_MOCK_MODE`; use mock response.                                              |
+| `byok_provider`     | string  | `""`    | BYOK mode: `"gemini"`, `"openai"`, or `"anthropic"` / `"claude"`. Skips platform credits. |
+| `byok_api_key`      | string  | `""`    | API key for the BYOK provider. Required when `byok_provider` is set.                      |
+| `byok_model`        | string  | `""`    | Model override for BYOK. Defaults to provider's fast model if omitted.                    |
+
+When `byok_provider` and `byok_api_key` are both non-empty, the gateway skips credit reservation and commit. The llmproxy instantiates a fresh provider from these fields for this request only.
 
 **Response `200 OK`**
 
@@ -45,6 +53,7 @@ Orchestrates the full credit-metered generation flow. Credits are reserved befor
   "idempotency_key": "demo-1",
   "estimated_credits": 75,
   "actual_credits": 62,
+  "byok": false,
   "response": {
     "output": "The stars burned cold above the wreckage...",
     "model": "gemini-2.0-flash",
@@ -56,6 +65,10 @@ Orchestrates the full credit-metered generation flow. Credits are reserved befor
   }
 }
 ```
+
+For BYOK requests, `reservation_id` is `""`, `estimated_credits` and `actual_credits` reflect token estimates only (not debited), and `byok` is `true`.
+
+````
 
 **Error responses**
 
@@ -72,7 +85,7 @@ Orchestrates the full credit-metered generation flow. Credits are reserved befor
 
 ```json
 { "status": "ok" }
-```
+````
 
 ---
 
@@ -102,7 +115,7 @@ Adds credits to a user's balance. Not routed through the gateway.
 
 ### `POST /v1/reservations`
 
-Atomically deducts estimated credits and creates a reservation.
+Atomically deducts estimated credits and creates a reservation. New users (no existing Redis key) are granted `INITIAL_CREDITS` free tokens before the deduction.
 
 **Request**
 
@@ -128,9 +141,9 @@ Atomically deducts estimated credits and creates a reservation.
 }
 ```
 
-| Status | Condition                  |
-|--------|----------------------------|
-| 402    | Insufficient credits        |
+| Status | Condition            |
+| ------ | -------------------- |
+| 402    | Insufficient credits |
 
 ---
 
@@ -154,10 +167,10 @@ Commits a reservation with the actual credit count. Reconciles over/under-spend 
 }
 ```
 
-| Status | Condition                                        |
-|--------|--------------------------------------------------|
-| 402    | Actual > reserved and insufficient balance        |
-| 409    | Reservation already committed or released         |
+| Status | Condition                                  |
+| ------ | ------------------------------------------ |
+| 402    | Actual > reserved and insufficient balance |
+| 409    | Reservation already committed or released  |
 
 ---
 
@@ -181,9 +194,9 @@ Releases a reservation and refunds the reserved credits.
 }
 ```
 
-| Status | Condition                            |
-|--------|--------------------------------------|
-| 409    | Reservation already committed/released|
+| Status | Condition                              |
+| ------ | -------------------------------------- |
+| 409    | Reservation already committed/released |
 
 ---
 
@@ -207,7 +220,13 @@ Internal service. Called only by gateway.
 
 ### `POST /v1/generate`
 
-**Request** — same shape as `contracts.GenerateRequest`.
+**Request** — same shape as `contracts.GenerateRequest`, including optional BYOK fields.
+
+Provider selection order:
+
+1. `force_mock: true` → MockProvider
+2. `byok_provider` + `byok_api_key` set → per-request provider instantiated from those fields
+3. Server-wide default (set at startup via `LLM_PROVIDER` / `LLM_MOCK_MODE` env vars)
 
 **Response `200 OK`**
 
@@ -223,7 +242,7 @@ Internal service. Called only by gateway.
 }
 ```
 
-Token counts are estimates (`len(text) / 4`, ceiling) unless Gemini returns real counts. When `LLM_MOCK_MODE=true` (default) or `GEMINI_API_KEY` is empty, the model field is `mock-gemini` and output is `Mock response to: <prompt>`.
+Token counts are estimates (`len(text) / 4`, ceiling). For BYOK requests, `model` reflects the provider-returned model name or the `byok_model` value.
 
 ---
 
@@ -248,12 +267,13 @@ Appends a credit event. Idempotent — re-submitting the same `idempotency_key` 
 
 **Event types**
 
-| `event_type`        | Emitted when                                      |
-|---------------------|---------------------------------------------------|
-| `credits_reserved`  | Reservation created                               |
-| `credits_committed` | Reservation committed with actual spend           |
-| `credits_released`  | Reservation released (e.g. LLM failure)           |
-| `commit_failed`     | Commit endpoint returned an error                 |
+| `event_type`        | Emitted when                                |
+| ------------------- | ------------------------------------------- |
+| `credits_reserved`  | Reservation created                         |
+| `credits_committed` | Reservation committed with actual spend     |
+| `credits_released`  | Reservation released (e.g. LLM failure)     |
+| `commit_failed`     | Commit endpoint returned an error           |
+| `byok_generate`     | BYOK request completed (no credits charged) |
 
 **Response `200 OK`**
 

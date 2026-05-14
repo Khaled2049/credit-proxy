@@ -13,6 +13,7 @@ Client          Gateway         Usage           LLM Proxy       Ledger          
   │                │  {user_id, estimated_credits,  │               │              │             │
   │                │   reservation_id, ttl_seconds} │               │              │             │
   │                │               │                │               │              │             │
+  │                │               │──SetNX user:credits:<id> INITIAL_CREDITS───────►  (new users only)
   │                │               │──Lua reserveScript────────────────────────────►             │
   │                │               │  DECRBY user:credits:<id>      │              │             │
   │                │               │  HSET reservation:<res_id>     │              │             │
@@ -159,3 +160,31 @@ Gateway emits:
 ```
 
 If no header is supplied, gateway auto-generates one via `ids.New("idem")`.
+
+## BYOK Flow (`byok_provider` + `byok_api_key` present)
+
+Credit accounting is skipped entirely. Only the LLM call and ledger audit happen:
+
+```
+Client          Gateway         LLM Proxy       Ledger
+  │                │                │               │
+  │─POST /generate►│                │               │
+  │  {byok_provider, byok_api_key,  │               │
+  │   byok_model, prompt, …}        │               │
+  │                │                │               │
+  │                │  (no Usage call — credit skip) │
+  │                │                │               │
+  │                │──POST /v1/generate─────────────►
+  │                │  (BYOK fields forwarded)        │
+  │                │                │               │
+  │                │                │──Provider API►│ (Gemini/OpenAI/Anthropic)
+  │                │                │◄──────────────│
+  │                │◄──200 {output}──────────────────
+  │                │                │               │
+  │                │──POST /v1/events (fire & forget)────────────────────────►
+  │                │  event_type: "byok_generate"    │               │
+  │                │  payload: { byok: true, model } │               │
+  │                │                │               │               │
+  │◄──200──────────│                │               │               │
+  │  {reservation_id: "", byok: true, response: …}  │               │
+```

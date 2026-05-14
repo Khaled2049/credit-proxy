@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-30
+
+### Added
+- Multi-provider LLM support: Gemini, OpenAI, Anthropic, Ollama, mock
+- `LLM_PROVIDER` env var selects server-wide provider at startup
+- Per-request BYOK override (`byok_provider`, `byok_api_key`, `byok_model`) — skips platform credits, still logs to ledger as `byok_generate`
+- Provider abstraction (`provider.go`) with per-provider files (`gemini.go`, `openai.go`, `anthropic.go`, `ollama.go`, `mock.go`)
+- `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` overrides for compatible APIs
+- `OLLAMA_BASE_URL` and `OLLAMA_MODEL` config
+
 ## [0.1.0] - 2026-04-26
 
 ### Added

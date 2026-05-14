@@ -4,6 +4,11 @@ info:
   description: |
     Public-facing API. Orchestrates credit reservation, LLM generation, and ledger
     audit events in a single call. All other services are internal.
+
+    **BYOK mode** (Bring Your Own Key): when `byok_provider` and `byok_api_key` are
+    set, the gateway skips credit reservation and commits entirely — the caller's key
+    is forwarded directly to the LLM proxy. A `byok_generate` ledger event is still
+    emitted for audit purposes. The `reservation_id` in the response will be empty.
   version: 1.0.0
 
 servers:
@@ -19,15 +24,19 @@ paths:
   /v1/generate:
     post:
       operationId: generate
-      summary: Generate text (credit-metered)
+      summary: Generate text (credit-metered or BYOK)
       description: |
-        Reserves credits, calls the LLM proxy, then commits (or releases) the
-        reservation based on actual token usage. Ledger events are emitted
-        fire-and-forget at each stage.
+        **Platform-credit mode** (default): reserves credits, calls the LLM proxy,
+        then commits (or releases) the reservation based on actual token usage.
 
-        The `Idempotency-Key` header deduplicates ledger events — re-sending the
-        same key re-uses the same reservation context. If omitted, a key is
-        auto-generated.
+        **BYOK mode**: when `byok_provider` + `byok_api_key` are present, skips
+        credit reservation entirely. The caller's key is forwarded to the LLM proxy,
+        which instantiates a per-request provider. A `byok_generate` ledger event is
+        still emitted for audit purposes.
+
+        Ledger events are emitted fire-and-forget at each stage. The
+        `Idempotency-Key` header deduplicates ledger events — re-sending the same key
+        re-uses the same reservation context. If omitted, a key is auto-generated.
       tags:
         - Generation
       parameters:
@@ -40,11 +49,38 @@ paths:
               $ref: '#/components/schemas/GenerateRequest'
             examples:
               basic:
-                summary: Basic generation
+                summary: Basic generation (platform credits)
                 value:
                   user_id: u1
                   prompt: Write a dramatic opening scene for a space opera.
                   max_output_tokens: 200
+              byok_gemini:
+                summary: BYOK — Gemini key
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic opening scene for a space opera.
+                  max_output_tokens: 200
+                  byok_provider: gemini
+                  byok_api_key: AIza...
+                  byok_model: gemini-2.5-flash
+              byok_openai:
+                summary: BYOK — OpenAI key
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic opening scene for a space opera.
+                  max_output_tokens: 200
+                  byok_provider: openai
+                  byok_api_key: sk-...
+                  byok_model: gpt-4o-mini
+              byok_anthropic:
+                summary: BYOK — Anthropic key
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic opening scene for a space opera.
+                  max_output_tokens: 200
+                  byok_provider: anthropic
+                  byok_api_key: sk-ant-...
+                  byok_model: claude-haiku-4-5-20251001
               mock_override:
                 summary: Force mock response
                 value:
@@ -59,18 +95,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenerateResponse'
-              example:
-                reservation_id: res_20260426T120000.000000000_a1b2c3d4
-                idempotency_key: order-abc-123
-                estimated_credits: 75
-                actual_credits: 62
-                response:
-                  output: The stars burned cold above the wreckage...
-                  model: gemini-2.0-flash
-                  usage:
-                    prompt_tokens: 11
-                    completion_tokens: 51
-                    total_tokens: 62
+              examples:
+                platform_credits:
+                  summary: Platform-credit response
+                  value:
+                    reservation_id: res_20260426T120000.000000000_a1b2c3d4
+                    idempotency_key: order-abc-123
+                    estimated_credits: 75
+                    actual_credits: 62
+                    byok: false
+                    response:
+                      output: The stars burned cold above the wreckage...
+                      model: gemini-2.0-flash
+                      usage:
+                        prompt_tokens: 11
+                        completion_tokens: 51
+                        total_tokens: 62
+                byok:
+                  summary: BYOK response (no reservation)
+                  value:
+                    reservation_id: ""
+                    idempotency_key: order-abc-456
+                    estimated_credits: 0
+                    actual_credits: 58
+                    byok: true
+                    response:
+                      output: The stars burned cold above the wreckage...
+                      model: gemini-2.5-flash
+                      usage:
+                        prompt_tokens: 11
+                        completion_tokens: 47
+                        total_tokens: 58
         '400':
           $ref: '#/components/responses/BadRequest'
         '402':
@@ -150,12 +205,33 @@ components:
           type: boolean
           description: Force mock LLM response regardless of LLM_MOCK_MODE setting
           default: false
+        byok_provider:
+          type: string
+          description: |
+            BYOK provider name. When set alongside `byok_api_key`, credit
+            reservation is skipped and the caller's key is used directly.
+          enum: [gemini, openai, anthropic]
+          example: gemini
+        byok_api_key:
+          type: string
+          description: |
+            Caller's API key for the chosen provider. Required when
+            `byok_provider` is set. Never logged or stored by the proxy.
+          example: AIza...
+        byok_model:
+          type: string
+          description: |
+            Model override for BYOK requests. Falls back to the provider
+            default when omitted (`gemini-2.5-flash`, `gpt-4o-mini`,
+            `claude-haiku-4-5-20251001`).
+          example: gemini-2.5-flash
 
     GenerateResponse:
       type: object
       properties:
         reservation_id:
           type: string
+          description: Empty for BYOK requests (no reservation created)
           example: res_20260426T120000.000000000_a1b2c3d4
         idempotency_key:
           type: string
@@ -163,13 +239,17 @@ components:
         estimated_credits:
           type: integer
           format: int64
-          description: Credits reserved before the LLM call (prompt tokens + max_output_tokens)
+          description: Credits reserved before the LLM call. Zero for BYOK requests.
           example: 75
         actual_credits:
           type: integer
           format: int64
-          description: Credits actually committed (prompt + completion tokens used)
+          description: Actual tokens used (prompt + completion)
           example: 62
+        byok:
+          type: boolean
+          description: True when the request used a caller-supplied API key
+          example: false
         response:
           $ref: '#/components/schemas/LLMResponse'
 

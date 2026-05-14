@@ -25,7 +25,8 @@ services:
       - "8081:8081"
     environment:
       USAGE_ADDR: ":8081"
-      REDIS_ADDR: "redis:6379"
+      REDIS_URL: "redis://redis:6379"
+      INITIAL_CREDITS: "${INITIAL_CREDITS:-10000}"
     depends_on:
       - redis
 
@@ -39,9 +40,17 @@ services:
       - "8082:8082"
     environment:
       LLMPROXY_ADDR: ":8082"
+      LLM_PROVIDER: "${LLM_PROVIDER:-mock}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.0-flash}"
-      LLM_MOCK_MODE: "${LLM_MOCK_MODE:-true}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-sonnet-4-6}"
+      ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3}"
 
   ledger:
     build:

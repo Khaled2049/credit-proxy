@@ -11,6 +11,24 @@ import (
 	"time"
 )
 
+// gcpIDToken fetches a GCP OIDC identity token for the given audience via the
+// GCE metadata server. Returns "" when not running on GCP (local dev / tests).
+func gcpIDToken(ctx context.Context, audience string) string {
+	url := "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=" + audience
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "" // not on GCP — metadata server unreachable
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
+}
+
 func ReadJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
@@ -43,6 +61,9 @@ func PostJSON[TReq any, TResp any](ctx context.Context, client *http.Client, url
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
+	}
+	if token := gcpIDToken(ctx, url); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := client.Do(req)

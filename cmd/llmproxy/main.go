@@ -105,12 +105,58 @@ func newProvider() (Provider, error) {
 	case "ollama":
 		return &OllamaProvider{
 			baseURL: getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-			model:   getenv("OLLAMA_MODEL", "llama3"),
+			model:   getenv("OLLAMA_MODEL", "phi4-mini:latest"),
 			client:  httpx.NewHTTPClient(time.Duration(120) * time.Second),
 		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown LLM_PROVIDER %q — supported: gemini, openai, anthropic, ollama, mock", name)
+	}
+}
+
+// newProviderFromBYOK constructs a per-request Provider from BYOK fields.
+// Returns (nil, nil) when no BYOK fields are set (caller should use default provider).
+func newProviderFromBYOK(req contracts.GenerateRequest) (Provider, error) {
+	if req.BYOKProvider == "" || req.BYOKApiKey == "" {
+		return nil, nil
+	}
+	client := httpx.NewHTTPClient(time.Duration(30) * time.Second)
+	switch strings.ToLower(req.BYOKProvider) {
+	case "gemini":
+		model := req.BYOKModel
+		if model == "" {
+			model = "gemini-2.5-flash"
+		}
+		return &GeminiProvider{
+			apiKey:    req.BYOKApiKey,
+			model:     model,
+			client:    client,
+			userAgent: "creditproxy-llmproxy/" + version.Version,
+		}, nil
+	case "openai":
+		model := req.BYOKModel
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+		return &OpenAIProvider{
+			apiKey:  req.BYOKApiKey,
+			model:   model,
+			baseURL: "https://api.openai.com/v1",
+			client:  client,
+		}, nil
+	case "anthropic", "claude":
+		model := req.BYOKModel
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		return &AnthropicProvider{
+			apiKey:  req.BYOKApiKey,
+			model:   model,
+			baseURL: "https://api.anthropic.com/v1",
+			client:  client,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown byok_provider %q — supported: gemini, openai, anthropic", req.BYOKProvider)
 	}
 }
 
@@ -147,6 +193,11 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	p := s.provider
 	if req.ForceMock {
 		p = s.mock
+	} else if byok, err2 := newProviderFromBYOK(req); err2 == nil && byok != nil {
+		p = byok
+	} else if err2 != nil {
+		http.Error(w, "invalid byok config: "+err2.Error(), http.StatusBadRequest)
+		return
 	}
 
 	result, err := p.Generate(r.Context(), GenerateOpts{

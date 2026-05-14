@@ -1,20 +1,15 @@
 package tokens
 
-// Estimate approximates token count with a simple heuristic for demos.
-// This keeps local behavior deterministic without external tokenizers.
+import "strings"
+
+// Estimate approximates token count using a word-based heuristic (~1.3 tokens/word).
+// More accurate than chars/4 for English prose while remaining dependency-free.
 func Estimate(text string) int64 {
-	if text == "" {
+	words := int64(len(strings.Fields(text)))
+	if words == 0 {
 		return 0
 	}
-	chars := len(text)
-	toks := chars / 4
-	if chars%4 != 0 {
-		toks++
-	}
-	if toks < 1 {
-		toks = 1
-	}
-	return int64(toks)
+	return max(1, words*13/10)
 }
 
 func EstimatePromptAndMaxCompletion(prompt string, maxCompletion int64) (promptTokens, totalEstimated int64) {

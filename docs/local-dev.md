@@ -67,7 +67,7 @@ make smoke
 ```
 
 This runs four curl calls in sequence:
-1. Purchase 2000 credits for user `u1`
+1. Purchase 2000 credits for user `u1` (optional — new users get `INITIAL_CREDITS` free on first request)
 2. Generate text (costs ~credits based on prompt + `max_output_tokens`)
 3. Check balance
 4. Inspect ledger history
@@ -77,13 +77,13 @@ This runs four curl calls in sequence:
 1. Get an API key from Google AI Studio
 2. Set in `.env`:
    ```
+   LLM_PROVIDER=gemini
    GEMINI_API_KEY=your-key-here
    GEMINI_MODEL=gemini-2.0-flash
-   LLM_MOCK_MODE=false
    ```
 3. `docker compose up --build`
 
-Without `GEMINI_API_KEY`, `LLM_MOCK_MODE` is forced to `true` regardless of the env setting.
+Without `GEMINI_API_KEY`, llmproxy will error at startup when `LLM_PROVIDER=gemini`. Use `LLM_PROVIDER=mock` for a keyless local setup.
 
 ## Environment Variables
 
@@ -96,9 +96,16 @@ Without `GEMINI_API_KEY`, `LLM_MOCK_MODE` is forced to `true` regardless of the 
 | `USAGE_ADDR`          | `:8081`                                                      | usage     |
 | `REDIS_ADDR`          | `redis:6379`                                                 | usage     |
 | `LLMPROXY_ADDR`       | `:8082`                                                      | llmproxy  |
+| `LLM_PROVIDER`        | `mock`                                                       | llmproxy  |
 | `GEMINI_API_KEY`      | `""`                                                         | llmproxy  |
 | `GEMINI_MODEL`        | `gemini-2.0-flash`                                           | llmproxy  |
-| `LLM_MOCK_MODE`       | `true`                                                       | llmproxy  |
+| `OPENAI_API_KEY`      | `""`                                                         | llmproxy  |
+| `OPENAI_MODEL`        | `gpt-4o-mini`                                                | llmproxy  |
+| `ANTHROPIC_API_KEY`   | `""`                                                         | llmproxy  |
+| `ANTHROPIC_MODEL`     | `claude-sonnet-4-6`                                          | llmproxy  |
+| `OLLAMA_BASE_URL`     | `http://localhost:11434`                                     | llmproxy  |
+| `OLLAMA_MODEL`        | `llama3`                                                     | llmproxy  |
+| `INITIAL_CREDITS`     | `10000`                                                      | usage     |
 | `LEDGER_ADDR`         | `:8083`                                                      | ledger    |
 | `POSTGRES_DSN`        | `postgres://postgres:postgres@postgres:5432/creditproxy?sslmode=disable` | ledger |
 

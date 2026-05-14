@@ -66,9 +66,13 @@ type server struct {
 
 func main() {
 	addr := getenv("USAGE_ADDR", ":8081")
-	redisAddr := getenv("REDIS_ADDR", "redis:6379")
+	redisURL := getenv("REDIS_URL", "redis://redis:6379")
 
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatalf("redis parse url: %v", err)
+	}
+	rdb := redis.NewClient(opts)
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("redis ping: %v", err)
 	}
@@ -140,6 +144,10 @@ func (s *server) handleCreateReservation(w http.ResponseWriter, r *http.Request)
 	if req.TTLSeconds <= 0 {
 		req.TTLSeconds = 120
 	}
+	// Grant free starting credits to new users (atomic: only sets if key doesn't exist).
+	initialCredits, _ := strconv.ParseInt(getenv("INITIAL_CREDITS", "10000"), 10, 64)
+	s.rdb.SetNX(r.Context(), userCreditsKey(req.UserID), initialCredits, 0)
+
 	keys := []string{userCreditsKey(req.UserID), reservationKey(req.ReservationID)}
 	args := []any{req.UserID, req.EstimatedCredits, req.TTLSeconds}
 	out, err := s.rdb.Eval(r.Context(), reserveScript, keys, args...).Result()

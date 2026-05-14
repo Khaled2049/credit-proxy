@@ -44,6 +44,11 @@ type GenerateRequest struct {
 	ReservationID    string  `json:"reservation_id,omitempty"`
 	IdempotencyKey   string  `json:"idempotency_key,omitempty"`
 	EstimatedCredits int64   `json:"estimated_credits,omitempty"`
+	// BYOK fields — when set, the request uses the caller's own API key and
+	// skips platform credit metering.
+	BYOKProvider string `json:"byok_provider,omitempty"` // "gemini" | "claude" | "openai"
+	BYOKApiKey   string `json:"byok_api_key,omitempty"`
+	BYOKModel    string `json:"byok_model,omitempty"`
 }
 
 type GenerateUsage struct {

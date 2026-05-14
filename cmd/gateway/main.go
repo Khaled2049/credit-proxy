@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -73,29 +72,33 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		req.IdempotencyKey = ids.New("idem")
 	}
 
+	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
+
 	promptToks, estimatedTotal := tokens.EstimatePromptAndMaxCompletion(req.Prompt, req.MaxOutputTokens)
-	reservationID := ids.New("res")
+	reservationID := ""
 
-	reserveReq := contracts.ReservationRequest{
-		ReservationID:    reservationID,
-		UserID:           req.UserID,
-		EstimatedCredits: estimatedTotal,
-		TTLSeconds:       180,
+	if !isBYOK {
+		reservationID = ids.New("res")
+		reserveReq := contracts.ReservationRequest{
+			ReservationID:    reservationID,
+			UserID:           req.UserID,
+			EstimatedCredits: estimatedTotal,
+			TTLSeconds:       180,
+		}
+		var reserveResp contracts.ReservationResponse
+		if err := httpx.PostJSON(r.Context(), s.client, s.usageURL+"/v1/reservations", reserveReq, &reserveResp, nil); err != nil {
+			http.Error(w, "reserve credits: "+err.Error(), http.StatusPaymentRequired)
+			return
+		}
+		_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
+			IdempotencyKey: req.IdempotencyKey + ":reserve",
+			UserID:         req.UserID,
+			ReservationID:  reservationID,
+			EventType:      "credits_reserved",
+			Credits:        estimatedTotal,
+			Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTotal},
+		})
 	}
-	var reserveResp contracts.ReservationResponse
-	if err := httpx.PostJSON(r.Context(), s.client, s.usageURL+"/v1/reservations", reserveReq, &reserveResp, nil); err != nil {
-		http.Error(w, "reserve credits: "+err.Error(), http.StatusPaymentRequired)
-		return
-	}
-
-	_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
-		IdempotencyKey: req.IdempotencyKey + ":reserve",
-		UserID:         req.UserID,
-		ReservationID:  reservationID,
-		EventType:      "credits_reserved",
-		Credits:        estimatedTotal,
-		Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTotal},
-	})
 
 	genReq := contracts.GenerateRequest{
 		UserID:          req.UserID,
@@ -105,46 +108,58 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		ForceMock:       req.ForceMock,
 		ReservationID:   reservationID,
 		IdempotencyKey:  req.IdempotencyKey,
+		BYOKProvider:    req.BYOKProvider,
+		BYOKApiKey:      req.BYOKApiKey,
+		BYOKModel:       req.BYOKModel,
 	}
 	var genResp contracts.GenerateResponse
 	if err := httpx.PostJSON(r.Context(), s.client, s.llmURL+"/v1/generate", genReq, &genResp, nil); err != nil {
-		_ = s.releaseReservation(r.Context(), req.UserID, reservationID, "llm_failure")
-		_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
-			IdempotencyKey: req.IdempotencyKey + ":release",
-			UserID:         req.UserID,
-			ReservationID:  reservationID,
-			EventType:      "credits_released",
-			Credits:        estimatedTotal,
-			Payload:        map[string]any{"reason": "llm_failure"},
-		})
+		if !isBYOK {
+			_ = s.releaseReservation(r.Context(), req.UserID, reservationID, "llm_failure")
+			_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
+				IdempotencyKey: req.IdempotencyKey + ":release",
+				UserID:         req.UserID,
+				ReservationID:  reservationID,
+				EventType:      "credits_released",
+				Credits:        estimatedTotal,
+				Payload:        map[string]any{"reason": "llm_failure"},
+			})
+		}
 		http.Error(w, "llm proxy failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
 	actualCredits := genResp.Usage.TotalTokens
-	if err := s.commitReservation(r.Context(), req.UserID, reservationID, actualCredits); err != nil {
-		_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
-			IdempotencyKey: req.IdempotencyKey + ":commit_failed",
-			UserID:         req.UserID,
-			ReservationID:  reservationID,
-			EventType:      "commit_failed",
-			Credits:        actualCredits,
-			Payload:        map[string]any{"error": err.Error()},
-		})
-		http.Error(w, "commit reservation failed: "+err.Error(), http.StatusConflict)
-		return
+	if !isBYOK {
+		if err := s.commitReservation(r.Context(), req.UserID, reservationID, actualCredits); err != nil {
+			_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
+				IdempotencyKey: req.IdempotencyKey + ":commit_failed",
+				UserID:         req.UserID,
+				ReservationID:  reservationID,
+				EventType:      "commit_failed",
+				Credits:        actualCredits,
+				Payload:        map[string]any{"error": err.Error()},
+			})
+			http.Error(w, "commit reservation failed: "+err.Error(), http.StatusConflict)
+			return
+		}
 	}
 
+	eventType := "credits_committed"
+	if isBYOK {
+		eventType = "byok_generate"
+	}
 	_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
 		IdempotencyKey: req.IdempotencyKey + ":commit",
 		UserID:         req.UserID,
 		ReservationID:  reservationID,
-		EventType:      "credits_committed",
+		EventType:      eventType,
 		Credits:        actualCredits,
 		Payload: map[string]any{
 			"estimated_credits": estimatedTotal,
 			"actual_tokens":     genResp.Usage,
 			"model":             genResp.Model,
+			"byok":              isBYOK,
 		},
 	})
 
@@ -153,6 +168,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		"idempotency_key":   req.IdempotencyKey,
 		"estimated_credits": estimatedTotal,
 		"actual_credits":    actualCredits,
+		"byok":              isBYOK,
 		"response":          genResp,
 	})
 }
@@ -177,16 +193,4 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return v
-}
-
-func getint(key string, fallback int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return fallback
-	}
-	i, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return i
 }

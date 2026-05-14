@@ -1,0 +1,172 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: story-6f89f
+  REGION: us-central1
+  ARTIFACT_REGISTRY_REPO: credit-proxy
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Create Artifact Registry repository if needed
+        run: |
+          if ! gcloud artifacts repositories describe ${{ env.ARTIFACT_REGISTRY_REPO }} \
+            --location=${{ env.REGION }} --project=${{ env.PROJECT_ID }} >/dev/null 2>&1; then
+            echo "Creating Artifact Registry repository..."
+            gcloud artifacts repositories create ${{ env.ARTIFACT_REGISTRY_REPO }} \
+              --repository-format=docker \
+              --location=${{ env.REGION }} \
+              --project=${{ env.PROJECT_ID }} \
+              --description="Docker repository for Credit Proxy"
+          else
+            echo "Repository already exists"
+          fi
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build and push Docker images
+        run: |
+          REGISTRY="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}"
+          for SERVICE in gateway usage llmproxy ledger; do
+            echo "Building $SERVICE..."
+            docker build \
+              --build-arg SERVICE=${SERVICE} \
+              --build-arg VERSION=${{ github.sha }} \
+              --build-arg GIT_COMMIT=${{ github.sha }} \
+              -t ${REGISTRY}/${SERVICE}:${{ github.sha }} \
+              .
+            docker push ${REGISTRY}/${SERVICE}:${{ github.sha }}
+          done
+
+      - name: Ensure Terraform state bucket exists
+        run: |
+          BUCKET=story-6f89f-tfstate
+          if ! gcloud storage buckets describe gs://$BUCKET >/dev/null 2>&1; then
+            echo "Creating Terraform state bucket..."
+            gcloud storage buckets create gs://$BUCKET \
+              --location=${{ env.REGION }} \
+              --uniform-bucket-level-access
+            gcloud storage buckets update gs://$BUCKET --versioning
+          else
+            echo "Bucket already exists"
+          fi
+
+      - name: Create or update secrets in Secret Manager
+        run: |
+          create_or_update_secret() {
+            local NAME=$1
+            local VALUE=$2
+            if [ -z "$VALUE" ]; then
+              echo "Skipping $NAME (empty value)"
+              return
+            fi
+            if gcloud secrets describe "${NAME}" --project=${{ env.PROJECT_ID }} >/dev/null 2>&1; then
+              CURRENT=$(gcloud secrets versions access latest --secret="${NAME}" \
+                --project=${{ env.PROJECT_ID }} 2>/dev/null || echo "")
+              if [ "$CURRENT" != "$VALUE" ]; then
+                echo "Updating $NAME..."
+                printf '%s' "$VALUE" | gcloud secrets versions add "${NAME}" \
+                  --data-file=- --project=${{ env.PROJECT_ID }}
+              else
+                echo "$NAME unchanged, skipping"
+              fi
+            else
+              echo "Creating $NAME..."
+              printf '%s' "$VALUE" | gcloud secrets create "${NAME}" \
+                --data-file=- --replication-policy=automatic \
+                --project=${{ env.PROJECT_ID }}
+            fi
+          }
+
+          create_or_update_secret "creditproxy-gemini-api-key"    "${{ secrets.GEMINI_API_KEY }}"
+          create_or_update_secret "creditproxy-openai-api-key"    "${{ secrets.OPENAI_API_KEY }}"
+          create_or_update_secret "creditproxy-anthropic-api-key" "${{ secrets.ANTHROPIC_API_KEY }}"
+          create_or_update_secret "creditproxy-upstash-redis-url" "${{ secrets.UPSTASH_REDIS_URL }}"
+          create_or_update_secret "creditproxy-postgres-dsn"      "${{ secrets.NEON_DATABASE_URL }}"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: ./terraform
+        run: |
+          REGISTRY="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}"
+          terraform plan \
+            -var="gateway_image=${REGISTRY}/gateway:${{ github.sha }}" \
+            -var="usage_image=${REGISTRY}/usage:${{ github.sha }}" \
+            -var="llmproxy_image=${REGISTRY}/llmproxy:${{ github.sha }}" \
+            -var="ledger_image=${REGISTRY}/ledger:${{ github.sha }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ./terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get gateway URL
+        id: get_url
+        working-directory: ./terraform
+        run: echo "gateway_url=$(terraform output -raw gateway_url)" >> $GITHUB_OUTPUT
+
+      - name: Health check gateway
+        run: |
+          URL="${{ steps.get_url.outputs.gateway_url }}/healthz"
+          echo "Checking $URL..."
+          for i in 1 2 3 4 5; do
+            if curl -sf --max-time 15 "$URL" > /dev/null; then
+              echo "Health check passed on attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i failed, waiting 15s..."
+            sleep 15
+          done
+          echo "Gateway health check failed after 5 attempts"
+          exit 1
+
+      - name: Deployment Summary
+        run: |
+          echo "## Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gateway:** ${{ steps.get_url.outputs.gateway_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region:** ${{ env.REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY

@@ -1,12 +1,12 @@
 # Credit Proxy
 
-Open-source, Dockerized distributed system in Go for credit-metered AI usage in a novel-writing app.
+Open-source, Dockerized distributed system in Go for credit-metered AI usage in a novel-writing app. Supports Gemini, Claude, OpenAI, and Ollama — including per-request BYOK (Bring Your Own Key) mode that bypasses platform credits.
 
 ## Services
 
 - `gateway` (public API): orchestrates request flow.
 - `usage`: atomically reserves/commits/releases credits in Redis.
-- `llmproxy`: calls Gemini (or mock mode) and returns token usage.
+- `llmproxy`: multi-provider LLM router (Gemini, Claude, OpenAI, Ollama, mock).
 - `ledger`: append-only transaction ledger in Postgres with idempotency keys.
 
 ## Distributed Systems Behavior
@@ -24,9 +24,9 @@ docker compose up --build
 
 Gateway is available at `http://localhost:8080`.
 
-## Example Flow
+## Example Flow — Platform Credits
 
-1) Purchase mock credits:
+New users receive `INITIAL_CREDITS` (default 10 000) automatically on their first generate request — no purchase needed. To top up manually:
 
 ```bash
 curl -sS -X POST http://localhost:8081/v1/credits/purchase \
@@ -34,7 +34,7 @@ curl -sS -X POST http://localhost:8081/v1/credits/purchase \
   -d '{"user_id":"u1","credits":2000}'
 ```
 
-2) Generate via gateway:
+Generate via gateway:
 
 ```bash
 curl -sS -X POST http://localhost:8080/v1/generate \
@@ -54,6 +54,26 @@ curl -sS http://localhost:8081/v1/users/u1/balance
 ```bash
 curl -sS http://localhost:8083/v1/users/u1/ledger
 ```
+
+## BYOK (Bring Your Own Key)
+
+Pass `byok_provider`, `byok_api_key`, and optionally `byok_model` in the generate request. The gateway skips credit reservation/commit and calls the provider directly using the supplied key. Usage is still recorded in the ledger with `event_type: "byok_generate"`.
+
+```bash
+curl -sS -X POST http://localhost:8080/v1/generate \
+  -H 'content-type: application/json' \
+  -H 'Idempotency-Key: byok-demo-1' \
+  -d '{
+    "user_id": "u1",
+    "prompt": "Write a dramatic opening scene for a space opera.",
+    "max_output_tokens": 200,
+    "byok_provider": "claude",
+    "byok_api_key": "sk-ant-...",
+    "byok_model": "claude-haiku-4-5-20251001"
+  }'
+```
+
+Supported `byok_provider` values: `gemini`, `openai`, `anthropic` (also accepts `claude`).
 
 ## Key Endpoints
 

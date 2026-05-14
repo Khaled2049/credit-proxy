@@ -8,9 +8,9 @@ func TestEstimate(t *testing.T) {
 		want int64
 	}{
 		{"", 0},
-		{"abcd", 1},
-		{"abcde", 2},
-		{"hello world", 3},
+		{"hello", 1},           // 1 word → 1*13/10 = 1
+		{"hello world", 2},     // 2 words → 2*13/10 = 2
+		{"one two three four", 5}, // 4 words → 4*13/10 = 5
 	}
 	for _, tt := range tests {
 		if got := Estimate(tt.in); got != tt.want {
@@ -20,8 +20,9 @@ func TestEstimate(t *testing.T) {
 }
 
 func TestEstimatePromptAndMaxCompletion(t *testing.T) {
-	p, tot := EstimatePromptAndMaxCompletion("abcd", 32)
-	if p != 1 || tot != 33 {
-		t.Fatalf("got (%d,%d), want (1,33)", p, tot)
+	// "hello world" = 2 words → 2 tokens
+	p, tot := EstimatePromptAndMaxCompletion("hello world", 32)
+	if p != 2 || tot != 34 {
+		t.Fatalf("got (%d,%d), want (2,34)", p, tot)
 	}
 }

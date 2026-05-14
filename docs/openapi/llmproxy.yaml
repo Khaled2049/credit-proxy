@@ -2,12 +2,20 @@ openapi: 3.0.3
 info:
   title: CreditProxy — LLM Proxy
   description: |
-    Internal service that wraps the Gemini API. Called only by the gateway —
-    not exposed to external clients in production.
+    Internal service that wraps multiple LLM providers. Called only by the
+    gateway — not exposed to external clients in production.
 
-    When `LLM_MOCK_MODE=true` (the default) or `GEMINI_API_KEY` is empty,
-    all calls return a canned mock response with the model set to `mock-gemini`.
-    Token counts are estimated as `ceil(len(text) / 4)` in both modes.
+    **Provider selection** (server-wide, via env vars):
+    `LLM_PROVIDER` → `gemini` | `openai` | `anthropic` | `ollama` | `mock`.
+    Falls back to `mock` when no API key is configured.
+
+    **BYOK mode** (per-request): when `byok_provider` + `byok_api_key` are
+    present, a provider is instantiated for that request only, ignoring the
+    server-wide configuration. Supported: `gemini`, `openai`, `anthropic`.
+
+    When `LLM_MOCK_MODE=true` (default) or no API key is configured, all
+    non-BYOK calls return a canned mock response (`model: mock-gemini`).
+    Token counts are estimated as `ceil(len(text) / 4)` in all modes.
   version: 1.0.0
 
 servers:
@@ -22,14 +30,18 @@ paths:
   /v1/generate:
     post:
       operationId: llmGenerate
-      summary: Generate text via Gemini (or mock)
+      summary: Generate text via configured provider (or BYOK)
       description: |
-        Calls the Gemini `generateContent` API and returns the text output
-        with estimated token usage. When operating in mock mode, returns
-        `"Mock response to: <prompt>"` immediately without any API call.
+        Calls the server-configured LLM provider and returns the text output
+        with estimated token usage.
 
-        The `force_mock` field overrides the service-level `LLM_MOCK_MODE`
-        setting on a per-request basis.
+        **Provider resolution order:**
+        1. `force_mock: true` → mock response, no API call
+        2. `byok_provider` + `byok_api_key` present → per-request provider
+        3. Server-wide provider (set via `LLM_PROVIDER` env var)
+
+        In mock mode, returns `"Mock response to: <prompt>"` immediately.
+        Unknown `byok_provider` values return `400`.
       tags:
         - Generation
       requestBody:
@@ -47,13 +59,31 @@ paths:
                   max_output_tokens: 120
                   force_mock: true
               real:
-                summary: Real Gemini call
+                summary: Server-configured provider
                 value:
                   user_id: u1
                   prompt: Write a dramatic chapter opening.
                   max_output_tokens: 120
                   temperature: 0.8
                   force_mock: false
+              byok_gemini:
+                summary: BYOK — Gemini
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic chapter opening.
+                  max_output_tokens: 120
+                  byok_provider: gemini
+                  byok_api_key: AIza...
+                  byok_model: gemini-2.5-flash
+              byok_anthropic:
+                summary: BYOK — Anthropic
+                value:
+                  user_id: u1
+                  prompt: Write a dramatic chapter opening.
+                  max_output_tokens: 120
+                  byok_provider: anthropic
+                  byok_api_key: sk-ant-...
+                  byok_model: claude-haiku-4-5-20251001
       responses:
         '200':
           description: Text generated successfully
@@ -85,7 +115,7 @@ paths:
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
         '502':
-          description: Gemini API returned a non-2xx response
+          description: Upstream provider returned a non-2xx response
           content:
             text/plain:
               schema:
@@ -141,6 +171,24 @@ components:
         idempotency_key:
           type: string
           description: Passed through from the gateway for tracing purposes
+        byok_provider:
+          type: string
+          description: |
+            Provider to instantiate per-request. When set with `byok_api_key`,
+            overrides the server-wide provider for this call only.
+          enum: [gemini, openai, anthropic]
+          example: gemini
+        byok_api_key:
+          type: string
+          description: |
+            Caller's API key for `byok_provider`. Never logged or stored.
+          example: AIza...
+        byok_model:
+          type: string
+          description: |
+            Model override for the BYOK provider. Defaults: `gemini-2.5-flash`,
+            `gpt-4o-mini`, `claude-haiku-4-5-20251001`.
+          example: gemini-2.5-flash
 
     LLMGenerateResponse:
       type: object
@@ -190,12 +238,16 @@ components:
             status: ok
 
     BadRequest:
-      description: Missing or invalid request fields
+      description: Missing or invalid request fields (including unknown byok_provider)
       content:
         text/plain:
           schema:
             type: string
-          example: prompt is required
+          examples:
+            missing_prompt:
+              value: prompt is required
+            invalid_byok:
+              value: 'invalid byok config: unknown byok_provider "ollama" — supported: gemini, openai, anthropic'
 
     MethodNotAllowed:
       description: Wrong HTTP method

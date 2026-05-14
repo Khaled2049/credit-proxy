@@ -14,8 +14,9 @@ Client ───────────────► │  │  Gateway  │�
                         │  └─────┬─────┘      └───────────┘                │
                         │        │                                         │
                         │        ├────────────►┌───────────┐               │
-                        │        │             │ LLM Proxy │──► Gemini API │
-                        │        │             │  :8082    │   (or mock)   │
+                        │        │             │ LLM Proxy │──► Gemini/OpenAI│
+                        │        │             │  :8082    │   /Anthropic  │
+                        │        │             │           │   /Ollama/mock│
                         │        │             └───────────┘               │
                         │        │                                         │
                         │        └────────────►┌───────────┐               │
@@ -27,14 +28,23 @@ Client ───────────────► │  │  Gateway  │�
 
 ## Services
 
-| Service    | Port | Responsibility                               | Backing Store |
-| ---------- | ---- | -------------------------------------------- | ------------- |
-| `gateway`  | 8080 | Orchestrates the full generate flow          | —             |
-| `usage`    | 8081 | Atomic credit reservation / commit / release | Redis 7       |
-| `llmproxy` | 8082 | Calls Gemini API; mock mode for local dev    | Gemini API    |
-| `ledger`   | 8083 | Append-only audit event log                  | Postgres 16   |
+| Service    | Port | Responsibility                                               | Backing Store      |
+| ---------- | ---- | ------------------------------------------------------------ | ------------------ |
+| `gateway`  | 8080 | Orchestrates the full generate flow; BYOK credit bypass      | —                  |
+| `usage`    | 8081 | Atomic credit reservation / commit / release                 | Redis 7            |
+| `llmproxy` | 8082 | Multi-provider LLM router (Gemini, Claude, OpenAI, Ollama, mock); per-request BYOK | External LLM APIs |
+| `ledger`   | 8083 | Append-only audit event log                                  | Postgres 16        |
 
 Each service is a single Go binary compiled from `cmd/<name>/main.go`. All inter-service calls use plain HTTP JSON — no gRPC, no message queue.
+
+## BYOK (Bring Your Own Key)
+
+When a `GenerateRequest` carries non-empty `byok_provider` and `byok_api_key` fields:
+
+- **Gateway**: skips the Usage service entirely (no reserve/commit/release). Emits a `byok_generate` ledger event for audit purposes.
+- **LLM Proxy**: calls `newProviderFromBYOK()`, which constructs a one-off provider (Gemini, OpenAI, or Anthropic) from the request fields, bypassing the server-wide default provider.
+
+Supported BYOK providers: `gemini`, `openai`, `anthropic` (also accepts `claude`).
 
 ## Shared Packages
 
