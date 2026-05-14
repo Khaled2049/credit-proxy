@@ -33,7 +33,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/generate", s.handleGenerate)
 
 	log.Printf("gateway listening on %s", addr)

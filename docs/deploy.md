@@ -349,7 +349,7 @@ The `deploy.yml` workflow runs automatically. It:
 
 8. Runs `terraform apply` to converge GCP state. On first run this creates IAM bindings and all 4 Cloud Run services. On subsequent runs it updates only what has changed (typically just the image tags).
 
-9. Health-checks the gateway's `/healthz` endpoint with 5 retries and 15-second waits. The internal services (usage, llmproxy, ledger) are `INGRESS_TRAFFIC_INTERNAL_ONLY` — they are not reachable from the GitHub runner, so only gateway is checked externally. Cloud Run's startup probe validates the internal services before they receive traffic.
+9. Health-checks the gateway's `/health` endpoint with 5 retries and 15-second waits. The internal services (usage, llmproxy, ledger) are `INGRESS_TRAFFIC_INTERNAL_ONLY` — they are not reachable from the GitHub runner, so only gateway is checked externally. Cloud Run's startup probe validates the internal services before they receive traffic.
 
 ### On every pull request to `main`
 
@@ -376,7 +376,7 @@ The deploy workflow ignores pushes where only `.md` files, `LICENSE`, or `.gitig
 GW=$(cd terraform && terraform output -raw gateway_url)
 
 # Health check
-curl "${GW}/healthz"
+curl "${GW}/health"
 # Expected: {"status":"ok","version":"...","commit":"..."}
 
 # End-to-end test with mock LLM (no API key needed)
@@ -443,7 +443,7 @@ GATEWAY_URL=$GW go test -v -tags smoke ./tests/smoke/
 
 ### Deployment checklist
 
-- [ ] `GET /healthz` on gateway returns `{"status":"ok"}`
+- [ ] `GET /health` on gateway returns `{"status":"ok"}`
 - [ ] `POST /v1/generate` with `force_mock: true` returns 200 and `actual_credits > 0`
 - [ ] Usage balance for smoke-test user decremented correctly
 - [ ] Ledger shows `credits_reserved` and `credits_committed` events

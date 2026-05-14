@@ -147,11 +147,11 @@ resource "google_cloud_run_v2_service" "usage" {
         }
       }
 
-      # /healthz returns static {"status":"ok"} — safe for liveness.
-      # Do NOT add Redis connectivity to /healthz; a Redis blip would restart healthy pods.
+      # /health returns static {"status":"ok"} — safe for liveness.
+      # Do NOT add Redis connectivity to /health; a Redis blip would restart healthy pods.
       startup_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 5
@@ -162,7 +162,7 @@ resource "google_cloud_run_v2_service" "usage" {
 
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 30
@@ -284,7 +284,7 @@ resource "google_cloud_run_v2_service" "llmproxy" {
 
       startup_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 5
@@ -295,7 +295,7 @@ resource "google_cloud_run_v2_service" "llmproxy" {
 
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 30
@@ -374,7 +374,7 @@ resource "google_cloud_run_v2_service" "ledger" {
 
       startup_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 5
@@ -385,7 +385,7 @@ resource "google_cloud_run_v2_service" "ledger" {
 
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 30
@@ -470,7 +470,7 @@ resource "google_cloud_run_v2_service" "gateway" {
 
       startup_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 5
@@ -481,7 +481,7 @@ resource "google_cloud_run_v2_service" "gateway" {
 
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
           port = 8080
         }
         initial_delay_seconds = 30

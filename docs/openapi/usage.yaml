@@ -222,7 +222,7 @@ paths:
                 type: string
               example: reservation not valid for release
 
-  /healthz:
+  /health:
     get:
       operationId: usageHealth
       summary: Health check

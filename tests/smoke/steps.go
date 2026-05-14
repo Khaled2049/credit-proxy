@@ -41,7 +41,7 @@ func (c *smokeCtx) iCheckTheHealthOfService(name string) error {
 	if url == "" {
 		return fmt.Errorf("unknown service: %s", name)
 	}
-	return c.get(url + "/healthz")
+	return c.get(url + "/health")
 }
 
 // ── Credit steps ──────────────────────────────────────────────────────────────

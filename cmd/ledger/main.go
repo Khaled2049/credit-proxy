@@ -57,7 +57,7 @@ func main() {
 
 	s := &server{db: db}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/users/", s.handleUserRoutes)
 

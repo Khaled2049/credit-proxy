@@ -147,7 +147,7 @@ paths:
                 type: string
               example: llm proxy failed upstream status 502
 
-  /healthz:
+  /health:
     get:
       operationId: gatewayHealth
       summary: Health check

@@ -81,11 +81,13 @@ For BYOK requests, `reservation_id` is `""`, `estimated_credits` and `actual_cre
 
 ---
 
-### `GET /healthz`
+### `GET /health`
 
 ```json
 { "status": "ok" }
-````
+```
+
+Gateway health is exposed only at `GET /health`.
 
 ---
 
