@@ -101,7 +101,7 @@ resource "google_cloud_run_v2_service" "usage" {
   name     = "credit-proxy-usage"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account = local.sa_email
@@ -198,7 +198,7 @@ resource "google_cloud_run_v2_service" "llmproxy" {
   name     = "credit-proxy-llmproxy"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account = local.sa_email
@@ -331,7 +331,7 @@ resource "google_cloud_run_v2_service" "ledger" {
   name     = "credit-proxy-ledger"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account = local.sa_email
@@ -421,7 +421,7 @@ resource "google_cloud_run_v2_service" "gateway" {
   name     = "credit-proxy-gateway"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account = local.sa_email
