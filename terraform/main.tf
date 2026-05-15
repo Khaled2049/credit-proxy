@@ -239,7 +239,7 @@ resource "google_cloud_run_v2_service" "llmproxy" {
 
       env {
         name  = "GEMINI_MODEL"
-        value = "gemini-2.0-flash"
+        value = var.gemini_model
       }
 
       env {

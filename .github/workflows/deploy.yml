@@ -136,6 +136,7 @@ jobs:
             -var="usage_image=${REGISTRY}/usage:${{ github.sha }}" \
             -var="llmproxy_image=${REGISTRY}/llmproxy:${{ github.sha }}" \
             -var="ledger_image=${REGISTRY}/ledger:${{ github.sha }}" \
+            -var="gemini_model=${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}" \
             -out=tfplan
 
       - name: Terraform Apply
