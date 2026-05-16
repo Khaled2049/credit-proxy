@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,9 +34,11 @@ func main() {
 		mock:     &MockProvider{},
 	}
 
+	internalToken := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_TOKEN"))
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/v1/generate", s.handleGenerate)
+	mux.HandleFunc("/v1/generate", requireInternalToken(internalToken, s.handleGenerate))
 
 	log.Printf("llmproxy listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
@@ -221,6 +224,23 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			TotalTokens:      promptTokens + completionTokens,
 		},
 	})
+}
+
+func requireInternalToken(token string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if token != "" {
+			got := strings.TrimSpace(r.Header.Get("X-Internal-Token"))
+			if got == "" {
+				http.Error(w, "missing internal token", http.StatusUnauthorized)
+				return
+			}
+			if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+				http.Error(w, "invalid internal token", http.StatusUnauthorized)
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 func getenv(key, fallback string) string {

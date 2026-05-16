@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Global platform daily request cap (`PLATFORM_DAILY_REQUEST_LIMIT`, default 1400) in usage service — atomic Redis Lua script enforces a hard ceiling on non-BYOK requests per UTC day, keeping total platform usage under the LLM provider's free-tier daily limit regardless of user count. BYOK requests are unaffected. Redis key `platform:daily:{YYYY-MM-DD}` auto-expires after 25 h.
+
 ## [0.2.0] - 2026-04-30
 
 ### Added

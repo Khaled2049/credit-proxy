@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kh1011/creditproxy/pkg/contracts"
 	"github.com/kh1011/creditproxy/pkg/httpx"
@@ -16,6 +17,17 @@ import (
 	"github.com/kh1011/creditproxy/pkg/version"
 	redis "github.com/redis/go-redis/v9"
 )
+
+// platformDailyScript atomically increments the platform-wide daily request counter
+// and returns 0 if the limit is already reached, or the new count if allowed.
+// KEYS[1] = platform daily key, ARGV[1] = limit, ARGV[2] = TTL seconds
+const platformDailyScript = `
+local current = tonumber(redis.call("GET", KEYS[1]) or "0")
+if current >= tonumber(ARGV[1]) then return 0 end
+local new = redis.call("INCR", KEYS[1])
+if new == 1 then redis.call("EXPIRE", KEYS[1], ARGV[2]) end
+return new
+`
 
 const reserveScript = `
 local bal = redis.call("GET", KEYS[1])
@@ -61,7 +73,9 @@ return {1, "released"}
 `
 
 type server struct {
-	rdb *redis.Client
+	rdb                *redis.Client
+	enablePurchase     bool
+	platformDailyLimit int64
 }
 
 func main() {
@@ -77,7 +91,15 @@ func main() {
 		log.Fatalf("redis ping: %v", err)
 	}
 
-	s := &server{rdb: rdb}
+	platformDailyLimit, _ := strconv.ParseInt(getenv("PLATFORM_DAILY_REQUEST_LIMIT", "1400"), 10, 64)
+	if platformDailyLimit <= 0 {
+		platformDailyLimit = 1400
+	}
+	s := &server{
+		rdb:                rdb,
+		enablePurchase:     strings.EqualFold(getenv("ENABLE_PURCHASE_API", "false"), "true"),
+		platformDailyLimit: platformDailyLimit,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/credits/purchase", s.handlePurchase)
@@ -100,6 +122,10 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *server) handlePurchase(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.enablePurchase {
+		http.NotFound(w, r)
 		return
 	}
 	var req contracts.PurchaseCreditsRequest
@@ -144,6 +170,25 @@ func (s *server) handleCreateReservation(w http.ResponseWriter, r *http.Request)
 	if req.TTLSeconds <= 0 {
 		req.TTLSeconds = 120
 	}
+	// Enforce global platform daily request cap before spending any per-user credits.
+	//  TTL of 90000s (25h) ensures the key expires after reset.
+	today := time.Now().UTC().Format("2006-01-02")
+	capResult, err := s.rdb.Eval(
+		r.Context(),
+		platformDailyScript,
+		[]string{"platform:daily:" + today},
+		s.platformDailyLimit,
+		90000,
+	).Int64()
+	if err != nil {
+		http.Error(w, "platform quota check failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if capResult == 0 {
+		http.Error(w, "platform daily request limit reached", http.StatusTooManyRequests)
+		return
+	}
+
 	// Grant free starting credits to new users (atomic: only sets if key doesn't exist).
 	initialCredits, _ := strconv.ParseInt(getenv("INITIAL_CREDITS", "10000"), 10, 64)
 	s.rdb.SetNX(r.Context(), userCreditsKey(req.UserID), initialCredits, 0)

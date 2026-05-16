@@ -1,8 +1,6 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
 
   postgres:
     image: postgres:16-alpine
@@ -10,8 +8,6 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: creditproxy
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -21,12 +17,11 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE: usage
-    ports:
-      - "8081:8081"
     environment:
       USAGE_ADDR: ":8081"
       REDIS_URL: "redis://redis:6379"
       INITIAL_CREDITS: "${INITIAL_CREDITS:-10000}"
+      ENABLE_PURCHASE_API: "${ENABLE_PURCHASE_API:-false}"
     depends_on:
       - redis
 
@@ -36,8 +31,6 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE: llmproxy
-    ports:
-      - "8082:8082"
     environment:
       LLMPROXY_ADDR: ":8082"
       LLM_PROVIDER: "${LLM_PROVIDER:-mock}"
@@ -51,6 +44,7 @@ services:
       ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434}"
       OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3}"
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN:-}"
 
   ledger:
     build:
@@ -58,8 +52,6 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE: ledger
-    ports:
-      - "8083:8083"
     environment:
       LEDGER_ADDR: ":8083"
       POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/creditproxy?sslmode=disable"
@@ -73,12 +65,13 @@ services:
       args:
         SERVICE: gateway
     ports:
-      - "8080:8080"
+      - "${CREDIT_PROXY_PORT:-8080}:8080"
     environment:
       GATEWAY_ADDR: ":8080"
       USAGE_SERVICE_URL: "http://usage:8081"
       LLM_PROXY_URL: "http://llmproxy:8082"
       LEDGER_SERVICE_URL: "http://ledger:8083"
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN:-}"
     depends_on:
       - usage
       - llmproxy

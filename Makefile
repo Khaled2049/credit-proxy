@@ -76,15 +76,10 @@ smoke-bdd:
 	go test -v -tags smoke ./tests/smoke/
 
 smoke:
-	curl -sS -X POST http://localhost:8081/v1/credits/purchase \
-	  -H 'content-type: application/json' \
-	  -d '{"user_id":"u1","credits":2000}' && echo
 	curl -sS -X POST http://localhost:8080/v1/generate \
 	  -H 'content-type: application/json' \
 	  -H 'Idempotency-Key: smoke-1' \
 	  -d '{"user_id":"u1","prompt":"Write a dramatic chapter opening.","max_output_tokens":120}' && echo
-	curl -sS http://localhost:8081/v1/users/u1/balance && echo
-	curl -sS http://localhost:8083/v1/users/u1/ledger && echo
 
 # ── Release ───────────────────────────────────────────────────────────────────
 

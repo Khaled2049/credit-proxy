@@ -37,12 +37,13 @@ Four Go microservices, each in `cmd/<name>/main.go` (single-file per service). S
 **Request flow for `POST /v1/generate` (gateway):**
 
 *Platform-credits path (default):*
-1. Estimate token cost (`pkg/tokens`) → reserve credits in usage (Redis Lua script)
-2. Emit `credits_reserved` ledger event (fire-and-forget)
-3. Call llmproxy → configured provider (Gemini/OpenAI/Anthropic/mock)
-4. On LLM failure: release reservation + emit `credits_released`
-5. On success: commit reservation with actual token count (Lua reconciles over/under-spend)
-6. Emit `credits_committed` ledger event
+1. Authenticate caller (`pkg/auth` — OIDC + Firebase token; dev mode skips OIDC)
+2. Estimate token cost (`pkg/tokens`) → check platform daily cap → reserve per-user credits in usage (Redis Lua scripts)
+3. Emit `credits_reserved` ledger event (fire-and-forget)
+4. Call llmproxy via `INTERNAL_SERVICE_TOKEN`-authenticated request → configured provider (Gemini/OpenAI/Anthropic/mock)
+5. On LLM failure: release reservation + emit `credits_released`
+6. On success: commit reservation with actual token count (Lua reconciles over/under-spend)
+7. Emit `credits_committed` ledger event
 
 *BYOK path (`byok_provider` + `byok_api_key` present):*
 1. Skip credit reservation entirely
@@ -57,17 +58,21 @@ Four Go microservices, each in `cmd/<name>/main.go` (single-file per service). S
 | llmproxy| 8082 | Gemini API |
 | ledger  | 8083 | Postgres 16 |
 
-**Usage service (Redis):** Credit state lives in two Redis key types:
-- `user:credits:<userID>` — integer balance
+**Usage service (Redis):** Credit state lives in three Redis key types:
+- `user:credits:<userID>` — integer balance per user
 - `reservation:<reservationID>` — hash with `user_id`, `amount`, `status`
+- `platform:daily:<YYYY-MM-DD>` — integer counter of non-BYOK requests today (auto-expires after 25 h)
 
-All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `commitScript`, `releaseScript`) for atomicity. Commit script reconciles estimated vs. actual spend by adjusting balance inline.
+All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `commitScript`, `releaseScript`) for atomicity. Commit script reconciles estimated vs. actual spend by adjusting balance inline. A fourth script (`platformDailyScript`) atomically increments the daily counter and rejects the request if it has reached `PLATFORM_DAILY_REQUEST_LIMIT` — this check runs before any per-user credit reservation and is skipped entirely for BYOK requests.
 
 **Ledger service (Postgres):** Append-only `ledger_events` table. Idempotency enforced via `ON CONFLICT (idempotency_key) DO UPDATE` (upsert is a no-op). Schema auto-applied at startup — no migration runner needed.
 
-**LLM proxy:** Supports Gemini, OpenAI, Anthropic, Ollama, and mock. Server-wide provider is selected at startup via env vars (`LLM_PROVIDER`, `LLM_MOCK_MODE`, `GEMINI_API_KEY`, etc.). Per-request **BYOK** overrides the server-wide provider: if `byok_provider` + `byok_api_key` are set in the request, `newProviderFromBYOK()` instantiates a fresh provider for that request only. Token counts use a character/4 heuristic (`pkg/tokens`), not a real tokenizer — intentional for demo determinism.
+**LLM proxy:** Supports Gemini, OpenAI, Anthropic, Ollama, and mock. Server-wide provider is selected at startup via env vars (`LLM_PROVIDER`, `LLM_MOCK_MODE`, `GEMINI_API_KEY`, etc.). Per-request **BYOK** overrides the server-wide provider: if `byok_provider` + `byok_api_key` are set in the request, `newProviderFromBYOK()` instantiates a fresh provider for that request only. Requires `INTERNAL_SERVICE_TOKEN` header from gateway when the token is configured.
+
+**Token estimation (`pkg/tokens`):** Prompt tokens estimated at ~1.3 tokens/word. Completion estimate is `min(maxCompletion, max(256, promptTokens))` — scales with prompt size rather than always reserving worst-case max. The commit step reconciles against actual token usage.
 
 **`pkg/` layout:**
+- `auth/` — `Verifier` struct: OIDC caller verification + Firebase ID token verification. Three modes: `dev` (no checks), `dev_strict` (Firebase only), `production` (OIDC + Firebase). Used by gateway to resolve `billingUserID`.
 - `contracts/` — all shared request/response structs
 - `httpx/` — thin helpers: `ReadJSON`, `WriteJSON`, `PostJSON`, `NewHTTPClient`
 - `ids/` — prefixed ID generator (e.g. `ids.New("res")` → `res_<uuid>`)
@@ -86,6 +91,7 @@ All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `com
 | `LLM_PROVIDER` | `mock` | Provider: `gemini`, `openai`, `anthropic`, `ollama`, `mock`. Set in `.env`, wired to llmproxy via docker-compose. |
 | `LLM_MOCK_MODE` | `true` | Legacy fallback: if `LLM_PROVIDER` unset and this is `true`, use mock |
 | `INITIAL_CREDITS` | `10000` | Free tokens granted to new users on their first reservation (atomic `SetNX`) |
+| `PLATFORM_DAILY_REQUEST_LIMIT` | `1400` | Hard ceiling on non-BYOK platform requests per UTC day. Keeps total usage under the LLM provider's free-tier RPD. BYOK requests are never counted. |
 | `GEMINI_API_KEY` | `""` | Required when `LLM_PROVIDER=gemini` |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | |
 | `OPENAI_API_KEY` | `""` | Required when `LLM_PROVIDER=openai` |
@@ -99,6 +105,14 @@ All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `com
 | `USAGE_SERVICE_URL` | `http://usage:8081` | Gateway config |
 | `LLM_PROXY_URL` | `http://llmproxy:8082` | Gateway config |
 | `LEDGER_SERVICE_URL` | `http://ledger:8083` | Gateway config |
+| `AUTH_MODE` | `dev` | `dev` skips all auth; `dev_strict` requires Firebase token; `production` requires OIDC + Firebase |
+| `FIREBASE_PROJECT_ID` | `""` | Required in `dev_strict` / `production` for Firebase token verification |
+| `GCP_AUDIENCE` | `""` | OIDC token audience (production); derived from request Host if unset |
+| `GCP_ALLOWED_CALLER_SA` | `""` | Comma-separated allowed caller emails or subject IDs; empty = any valid token |
+| `INTERNAL_SERVICE_TOKEN` | `""` | Shared secret gateway sends to llmproxy via `X-Internal-Token`; empty = no enforcement |
+| `MAX_OUTPUT_TOKENS` | `8192` | Gateway hard cap on `max_output_tokens` per request |
+| `MAX_PROMPT_CHARS` | `64000` | Gateway hard cap on prompt length in characters |
+| `MAX_REQUESTS_PER_MINUTE_PER_USER` | `10` | Per-user token-bucket rate limit at the gateway |
 
 BYOK fields (`byok_provider`, `byok_api_key`, `byok_model`) in the request body override all env-var provider config for that request only.
 

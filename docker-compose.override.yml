@@ -1,0 +1,7 @@
+# Local-only overrides (merged automatically by `docker compose up`).
+# Exposes Postgres on localhost:5432 for pgAdmin, psql, etc.
+# Base compose keeps internal services off the host for security.
+services:
+  postgres:
+    ports:
+      - "5432:5432"

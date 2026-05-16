@@ -14,11 +14,12 @@ import (
 )
 
 type smokeCtx struct {
-	client      *http.Client
-	gatewayURL  string
-	usageURL    string
-	llmURL      string
-	ledgerURL   string
+	client        *http.Client
+	gatewayURL    string
+	usageURL      string
+	llmURL        string
+	ledgerURL     string
+	firebaseToken string
 
 	// per-scenario state
 	userID      string
@@ -26,8 +27,8 @@ type smokeCtx struct {
 	idemKey     string
 	idemKeySufx int // incremented to generate additional unique keys
 
-	lastStatus  int
-	lastBody    map[string]any
+	lastStatus int
+	lastBody   map[string]any
 
 	savedEventID float64
 	balBefore    float64
@@ -36,11 +37,12 @@ type smokeCtx struct {
 
 func newSmokeCtx() *smokeCtx {
 	return &smokeCtx{
-		client:     &http.Client{Timeout: 15 * time.Second},
-		gatewayURL: getenv("GATEWAY_URL", "http://localhost:8080"),
-		usageURL:   getenv("USAGE_URL", "http://localhost:8081"),
-		llmURL:     getenv("LLMPROXY_URL", "http://localhost:8082"),
-		ledgerURL:  getenv("LEDGER_URL", "http://localhost:8083"),
+		client:        &http.Client{Timeout: 15 * time.Second},
+		gatewayURL:    getenv("GATEWAY_URL", "http://localhost:8080"),
+		usageURL:      getenv("USAGE_URL", "http://localhost:8081"),
+		llmURL:        getenv("LLMPROXY_URL", "http://localhost:8082"),
+		ledgerURL:     getenv("LEDGER_URL", "http://localhost:8083"),
+		firebaseToken: getenv("FIREBASE_TOKEN", ""),
 	}
 }
 
@@ -56,6 +58,9 @@ func (c *smokeCtx) post(url string, body any, headers map[string]string) error {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if strings.HasSuffix(url, "/v1/generate") && c.firebaseToken != "" {
+		req.Header.Set("X-Firebase-Token", c.firebaseToken)
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

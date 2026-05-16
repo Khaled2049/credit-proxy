@@ -17,5 +17,6 @@ func EstimatePromptAndMaxCompletion(prompt string, maxCompletion int64) (promptT
 	if maxCompletion < 0 {
 		maxCompletion = 0
 	}
-	return promptTokens, promptTokens + maxCompletion
+	completionEstimate := min(maxCompletion, max(256, promptTokens))
+	return promptTokens, promptTokens + completionEstimate
 }

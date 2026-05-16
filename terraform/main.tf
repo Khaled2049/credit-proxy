@@ -138,6 +138,11 @@ resource "google_cloud_run_v2_service" "usage" {
       }
 
       env {
+        name  = "ENABLE_PURCHASE_API"
+        value = "false"
+      }
+
+      env {
         name = "REDIS_URL"
         value_source {
           secret_key_ref {
@@ -452,6 +457,21 @@ resource "google_cloud_run_v2_service" "gateway" {
         value = ":8080"
       }
 
+      env {
+        name  = "AUTH_MODE"
+        value = "production"
+      }
+
+      env {
+        name  = "FIREBASE_PROJECT_ID"
+        value = var.project_id
+      }
+
+      env {
+        name  = "GCP_ALLOWED_CALLER_SA"
+        value = "novelsync-agents-run@${var.project_id}.iam.gserviceaccount.com"
+      }
+
       # Internal service URLs — stable after first deploy, injected directly from Terraform.
       env {
         name  = "USAGE_SERVICE_URL"
@@ -505,8 +525,7 @@ resource "google_cloud_run_v2_service" "gateway" {
   ]
 }
 
-# Only novelsync-agents may invoke the gateway — no public internet access.
-# Both services are in the same GCP project so INGRESS_INTERNAL_ONLY allows the call.
+# Only novelsync-agents may invoke the gateway through Cloud Run IAM.
 resource "google_cloud_run_v2_service_iam_member" "gateway_agents_invoker" {
   name     = google_cloud_run_v2_service.gateway.name
   location = var.region
