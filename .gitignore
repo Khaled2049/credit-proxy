@@ -1,5 +1,9 @@
 # Binaries
 /bin/
+/gateway
+/usage
+/llmproxy
+/ledger
 *.exe
 *.exe~
 *.dll
