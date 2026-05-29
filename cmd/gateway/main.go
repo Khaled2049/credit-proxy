@@ -108,6 +108,10 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		req.IdempotencyKey = ids.New("idem")
 	}
 
+	// Correlation id for tying a client-facing generic error back to the
+	// detailed server log (we never echo upstream error bodies to the caller).
+	reqID := ids.New("req")
+
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
 
 	promptToks, estimatedTotal := tokens.EstimatePromptAndMaxCompletion(req.Prompt, req.MaxOutputTokens)
@@ -123,7 +127,8 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		}
 		var reserveResp contracts.ReservationResponse
 		if err := httpx.PostJSON(r.Context(), s.client, s.usageURL+"/v1/reservations", reserveReq, &reserveResp, nil); err != nil {
-			http.Error(w, "reserve credits: "+err.Error(), http.StatusPaymentRequired)
+			log.Printf("reserve credits failed req=%s user=%s: %v", reqID, billingUserID, err)
+			http.Error(w, "unable to reserve credits (ref "+reqID+")", http.StatusPaymentRequired)
 			return
 		}
 		_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
@@ -165,7 +170,8 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				Payload:        map[string]any{"reason": "llm_failure"},
 			})
 		}
-		http.Error(w, "llm proxy failed: "+err.Error(), http.StatusBadGateway)
+		log.Printf("llm proxy failed req=%s user=%s byok=%t: %v", reqID, billingUserID, isBYOK, err)
+		http.Error(w, "upstream generation failed (ref "+reqID+")", http.StatusBadGateway)
 		return
 	}
 
@@ -180,7 +186,8 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				Credits:        actualCredits,
 				Payload:        map[string]any{"error": err.Error()},
 			})
-			http.Error(w, "commit reservation failed: "+err.Error(), http.StatusConflict)
+			log.Printf("commit reservation failed req=%s user=%s res=%s: %v", reqID, billingUserID, reservationID, err)
+			http.Error(w, "commit reservation failed (ref "+reqID+")", http.StatusConflict)
 			return
 		}
 	}

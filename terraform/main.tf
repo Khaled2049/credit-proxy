@@ -69,6 +69,13 @@ data "google_secret_manager_secret" "postgres_dsn" {
   project   = var.project_id
 }
 
+# Shared secret for gateway → llmproxy auth (X-Internal-Token).
+# Shell and version created by deploy.yml; set the INTERNAL_SERVICE_TOKEN GitHub secret.
+data "google_secret_manager_secret" "internal_service_token" {
+  secret_id = "creditproxy-internal-service-token"
+  project   = var.project_id
+}
+
 # ── IAM — Cloud Run SA secret access ─────────────────────────────────────────
 
 locals {
@@ -78,6 +85,7 @@ locals {
     anthropic    = data.google_secret_manager_secret.anthropic_api_key.secret_id
     upstash      = data.google_secret_manager_secret.upstash_redis_url.secret_id
     postgres_dsn = data.google_secret_manager_secret.postgres_dsn.secret_id
+    internal     = data.google_secret_manager_secret.internal_service_token.secret_id
   }
 }
 
@@ -287,6 +295,16 @@ resource "google_cloud_run_v2_service" "llmproxy" {
         }
       }
 
+      env {
+        name = "INTERNAL_SERVICE_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.internal_service_token.secret_id
+            version = "latest"
+          }
+        }
+      }
+
       startup_probe {
         http_get {
           path = "/health"
@@ -486,6 +504,16 @@ resource "google_cloud_run_v2_service" "gateway" {
       env {
         name  = "LEDGER_SERVICE_URL"
         value = google_cloud_run_v2_service.ledger.uri
+      }
+
+      env {
+        name = "INTERNAL_SERVICE_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.internal_service_token.secret_id
+            version = "latest"
+          }
+        }
       }
 
       startup_probe {

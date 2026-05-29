@@ -11,6 +11,7 @@ import (
 
 	"github.com/kh1011/creditproxy/pkg/contracts"
 	"github.com/kh1011/creditproxy/pkg/httpx"
+	"github.com/kh1011/creditproxy/pkg/ids"
 	"github.com/kh1011/creditproxy/pkg/tokens"
 	"github.com/kh1011/creditproxy/pkg/version"
 )
@@ -209,7 +210,11 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		Temperature:     req.Temperature,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		// Provider errors can embed upstream response bodies; log them but
+		// return only a generic message + correlation ref to the caller.
+		reqID := ids.New("llm")
+		log.Printf("provider %s generate failed ref=%s: %v", p.Name(), reqID, err)
+		http.Error(w, "generation failed (ref "+reqID+")", http.StatusBadGateway)
 		return
 	}
 

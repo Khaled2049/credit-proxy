@@ -116,6 +116,7 @@ jobs:
           create_or_update_secret "creditproxy-anthropic-api-key" "${{ secrets.ANTHROPIC_API_KEY }}"
           create_or_update_secret "creditproxy-upstash-redis-url" "${{ secrets.UPSTASH_REDIS_URL }}"
           create_or_update_secret "creditproxy-postgres-dsn"      "${{ secrets.NEON_DATABASE_URL }}"
+          create_or_update_secret "creditproxy-internal-service-token" "${{ secrets.INTERNAL_SERVICE_TOKEN }}"
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
