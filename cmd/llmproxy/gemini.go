@@ -13,7 +13,7 @@ import (
 // GeminiProvider calls the Google Gemini generateContent API.
 //
 // Required env vars: GEMINI_API_KEY
-// Optional env vars: GEMINI_MODEL (default: gemini-2.0-flash)
+// Optional env vars: GEMINI_MODEL (default: gemini-2.5-flash-lite)
 type GeminiProvider struct {
 	apiKey    string
 	model     string

@@ -79,7 +79,7 @@ func newProvider() (Provider, error) {
 		}
 		return &GeminiProvider{
 			apiKey:    apiKey,
-			model:     getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+			model:     getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"),
 			client:    httpx.NewHTTPClient(time.Duration(30) * time.Second),
 			userAgent: "creditproxy-llmproxy/" + version.Version,
 		}, nil

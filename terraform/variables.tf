@@ -97,9 +97,9 @@ variable "llm_provider" {
 }
 
 variable "gemini_model" {
-  description = "Gemini model name used by llmproxy (e.g. gemini-2.5-flash)"
+  description = "Gemini model name used by llmproxy (e.g. gemini-2.5-flash-lite)"
   type        = string
-  default     = "gemini-2.5-flash"
+  default     = "gemini-2.5-flash-lite"
 }
 
 variable "initial_credits" {
