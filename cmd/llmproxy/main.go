@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -212,9 +213,16 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Provider errors can embed upstream response bodies; log them but
 		// return only a generic message + correlation ref to the caller.
+		// The status code IS forwarded (not the body) so the gateway/agent
+		// can tell "bad API key" apart from "provider is having a bad day".
 		reqID := ids.New("llm")
 		log.Printf("provider %s generate failed ref=%s: %v", p.Name(), reqID, err)
-		http.Error(w, "generation failed (ref "+reqID+")", http.StatusBadGateway)
+		status := http.StatusBadGateway
+		var perr *ProviderError
+		if errors.As(err, &perr) {
+			status = classifyProviderStatus(perr.StatusCode)
+		}
+		http.Error(w, "generation failed (ref "+reqID+")", status)
 		return
 	}
 

@@ -43,13 +43,13 @@ func (o *OllamaProvider) Generate(ctx context.Context, opts GenerateOpts) (Gener
 
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return GenerateResult{}, fmt.Errorf("ollama unreachable: %w", err)
+		return GenerateResult{}, &ProviderError{Provider: "ollama", Message: fmt.Sprintf("unreachable: %v", err)}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return GenerateResult{}, fmt.Errorf("ollama status %d: %s", resp.StatusCode, string(msg))
+		return GenerateResult{}, &ProviderError{Provider: "ollama", StatusCode: resp.StatusCode, Message: string(msg)}
 	}
 
 	var gr struct {

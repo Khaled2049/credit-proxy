@@ -52,7 +52,7 @@ func (o *OpenAIProvider) Generate(ctx context.Context, opts GenerateOpts) (Gener
 
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return GenerateResult{}, fmt.Errorf("openai status %d: %s", resp.StatusCode, string(msg))
+		return GenerateResult{}, &ProviderError{Provider: "openai", StatusCode: resp.StatusCode, Message: string(msg)}
 	}
 
 	var gr struct {

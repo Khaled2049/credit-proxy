@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -57,6 +58,28 @@ func main() {
 
 	log.Printf("gateway listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+func classifyReservationStatus(err error) int {
+	var upErr *httpx.UpstreamError
+	if errors.As(err, &upErr) {
+		switch upErr.StatusCode {
+		case http.StatusPaymentRequired, http.StatusTooManyRequests:
+			return upErr.StatusCode
+		}
+	}
+	return http.StatusServiceUnavailable
+}
+
+func classifyGenerationStatus(err error) int {
+	var upErr *httpx.UpstreamError
+	if errors.As(err, &upErr) {
+		switch upErr.StatusCode {
+		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusNotFound:
+			return upErr.StatusCode
+		}
+	}
+	return http.StatusBadGateway
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -128,7 +151,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		var reserveResp contracts.ReservationResponse
 		if err := httpx.PostJSON(r.Context(), s.client, s.usageURL+"/v1/reservations", reserveReq, &reserveResp, nil); err != nil {
 			log.Printf("reserve credits failed req=%s user=%s: %v", reqID, billingUserID, err)
-			http.Error(w, "unable to reserve credits (ref "+reqID+")", http.StatusPaymentRequired)
+			http.Error(w, "unable to reserve credits (ref "+reqID+")", classifyReservationStatus(err))
 			return
 		}
 		_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
@@ -171,7 +194,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		log.Printf("llm proxy failed req=%s user=%s byok=%t: %v", reqID, billingUserID, isBYOK, err)
-		http.Error(w, "upstream generation failed (ref "+reqID+")", http.StatusBadGateway)
+		http.Error(w, "upstream generation failed (ref "+reqID+")", classifyGenerationStatus(err))
 		return
 	}
 

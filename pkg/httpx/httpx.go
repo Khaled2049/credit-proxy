@@ -48,6 +48,19 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// UpstreamError wraps a non-2xx response from an internal service-to-service
+// call. Callers use errors.As to recover the real status code and classify
+// the failure (e.g. distinguish "insufficient credits" from "redis is down")
+// instead of parsing the error string.
+type UpstreamError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *UpstreamError) Error() string {
+	return fmt.Sprintf("upstream status %d: %s", e.StatusCode, e.Body)
+}
+
 func PostJSON[TReq any, TResp any](ctx context.Context, client *http.Client, url string, reqBody TReq, out *TResp, headers map[string]string) error {
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -74,7 +87,7 @@ func PostJSON[TReq any, TResp any](ctx context.Context, client *http.Client, url
 
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
+		return &UpstreamError{StatusCode: resp.StatusCode, Body: string(b)}
 	}
 	if out == nil {
 		return nil

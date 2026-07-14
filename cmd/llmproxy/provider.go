@@ -1,6 +1,47 @@
 package main
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
+
+// ProviderError wraps a non-2xx response from an upstream LLM provider API.
+// StatusCode is the provider's own HTTP status (0 for non-HTTP failures like
+// a network error or a malformed response) — handleGenerate uses it to
+// forward the real failure category to the gateway instead of collapsing
+// every provider failure into a generic 502.
+type ProviderError struct {
+	Provider   string
+	StatusCode int
+	Message    string
+}
+
+func (e *ProviderError) Error() string {
+	if e.StatusCode == 0 {
+		return fmt.Sprintf("%s: %s", e.Provider, e.Message)
+	}
+	return fmt.Sprintf("%s status %d: %s", e.Provider, e.StatusCode, e.Message)
+}
+
+// classifyProviderStatus maps a provider's own HTTP status to the status
+// llmproxy returns to the gateway. Only categories the caller can act on
+// differently are split out; everything else (5xx, malformed responses,
+// StatusCode == 0 for network failures) collapses to 502 — genuinely
+// unclassified/transient, safe to treat as "try again".
+func classifyProviderStatus(providerStatus int) int {
+	switch providerStatus {
+	case 401, 403:
+		return 401
+	case 429:
+		return 429
+	case 404:
+		return 404
+	case 400:
+		return 400
+	default:
+		return 502
+	}
+}
 
 // GenerateOpts holds the per-request generation parameters passed to a Provider.
 type GenerateOpts struct {
