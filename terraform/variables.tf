@@ -107,3 +107,15 @@ variable "initial_credits" {
   type        = string
   default     = "10000"
 }
+
+variable "tokens_per_credit" {
+  description = "Tokens per credit — gateway divides real token usage by this to bill credits (ceil, min 1)"
+  type        = string
+  default     = "100"
+}
+
+variable "max_purchases_per_day_per_user" {
+  description = "Max successful credit purchases per user per UTC day (usage service)"
+  type        = string
+  default     = "3"
+}

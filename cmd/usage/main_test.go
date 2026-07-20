@@ -20,7 +20,27 @@ func newTestServer(t *testing.T, dailyLimit int64) (*server, *miniredis.Miniredi
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	return &server{rdb: rdb, platformDailyLimit: dailyLimit}, mr
+	// Default the per-user purchase cap high so purchase tests that don't
+	// exercise it aren't accidentally throttled; cap tests set it explicitly.
+	return &server{rdb: rdb, platformDailyLimit: dailyLimit, maxPurchasesPerDay: 100}, mr
+}
+
+func getBalance(t *testing.T, s *server, userID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/v1/users/"+userID+"/balance", nil)
+	w := httptest.NewRecorder()
+	s.handleUserRoutes(w, req)
+	return w
+}
+
+func postPurchase(t *testing.T, s *server, userID string, credits int64) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(contracts.PurchaseCreditsRequest{UserID: userID, Credits: credits})
+	req := httptest.NewRequest(http.MethodPost, "/v1/credits/purchase", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handlePurchase(w, req)
+	return w
 }
 
 func postReservation(t *testing.T, s *server, userID string, credits int64) *httptest.ResponseRecorder {
@@ -129,6 +149,131 @@ func TestPlatformDailyCap_ResetsNextDay(t *testing.T) {
 	w = postReservation(t, s, "u1", 100)
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200 after daily reset, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- new-user balance edge cases ---
+
+// decodeBalance pulls available_credits out of a BalanceResponse recorder.
+func decodeBalance(t *testing.T, w *httptest.ResponseRecorder) int64 {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("balance: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var out contracts.BalanceResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode balance: %v", err)
+	}
+	return out.AvailableCredits
+}
+
+func TestBalance_BrandNewUserReflectsInitialGrant(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.initialCredits = 10000
+
+	// A user who has never generated should see their free starting balance,
+	// not 0 (which would wrongly trip the low-credit top-up nag).
+	if got := decodeBalance(t, getBalance(t, s, "newbie")); got != 10000 {
+		t.Fatalf("new-user balance = %d, want 10000", got)
+	}
+}
+
+func TestBalance_DoesNotRegrantSpentDownBalance(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.initialCredits = 10000
+	// User exists and has legitimately spent everything.
+	s.rdb.Set(t.Context(), userCreditsKey("spent"), 0, 0)
+
+	if got := decodeBalance(t, getBalance(t, s, "spent")); got != 0 {
+		t.Fatalf("spent-down balance = %d, want 0 (must not re-grant)", got)
+	}
+}
+
+func TestBalance_EmptyUserIDIsNotFound(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.initialCredits = 10000
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/users//balance", nil)
+	w := httptest.NewRecorder()
+	s.handleUserRoutes(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("empty user id: want 404, got %d", w.Code)
+	}
+	// The junk key must not have been seeded.
+	if s.rdb.Exists(t.Context(), userCreditsKey("")).Val() != 0 {
+		t.Fatal("empty-user-id balance must not create a credits key")
+	}
+}
+
+func TestPurchase_BeforeFirstGenerationAddsToInitialGrant(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.enablePurchase = true
+	s.initialCredits = 10000
+
+	// Top up before ever generating: result must be initial + purchase, not
+	// just the purchased amount.
+	if got := decodeBalance(t, postPurchase(t, s, "u1", 50000)); got != 60000 {
+		t.Fatalf("balance after top-up = %d, want 60000 (10000 grant + 50000)", got)
+	}
+	if got := decodeBalance(t, getBalance(t, s, "u1")); got != 60000 {
+		t.Fatalf("subsequent balance = %d, want 60000", got)
+	}
+}
+
+func TestPurchase_DailyCapBlocksAfterLimit(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.enablePurchase = true
+	s.initialCredits = 0
+	s.maxPurchasesPerDay = 3
+
+	// First 3 purchases succeed.
+	for i := 1; i <= 3; i++ {
+		w := postPurchase(t, s, "u1", 200)
+		if w.Code != http.StatusOK {
+			t.Fatalf("purchase %d: want 200, got %d: %s", i, w.Code, w.Body.String())
+		}
+	}
+
+	// 4th is rejected with 429 and does NOT mint (balance stays 600).
+	w := postPurchase(t, s, "u1", 200)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("4th purchase: want 429, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "daily purchase limit reached") {
+		t.Fatalf("unexpected error body: %s", w.Body.String())
+	}
+	if got := decodeBalance(t, getBalance(t, s, "u1")); got != 600 {
+		t.Fatalf("balance after blocked purchase = %d, want 600 (unchanged)", got)
+	}
+}
+
+func TestPurchase_DailyCapIsPerUser(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.enablePurchase = true
+	s.initialCredits = 0
+	s.maxPurchasesPerDay = 1
+
+	if w := postPurchase(t, s, "alice", 200); w.Code != http.StatusOK {
+		t.Fatalf("alice first purchase: want 200, got %d", w.Code)
+	}
+	// Alice is now capped, but Bob is unaffected.
+	if w := postPurchase(t, s, "alice", 200); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("alice second purchase: want 429, got %d", w.Code)
+	}
+	if w := postPurchase(t, s, "bob", 200); w.Code != http.StatusOK {
+		t.Fatalf("bob first purchase: want 200 (per-user cap), got %d", w.Code)
+	}
+}
+
+func TestPurchase_DoesNotRegrantForExistingUser(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.enablePurchase = true
+	s.initialCredits = 10000
+	// Existing user who has spent down to 500.
+	s.rdb.Set(t.Context(), userCreditsKey("u1"), 500, 0)
+
+	if got := decodeBalance(t, postPurchase(t, s, "u1", 10000)); got != 10500 {
+		t.Fatalf("balance after top-up = %d, want 10500 (500 + 10000, no re-grant)", got)
 	}
 }
 

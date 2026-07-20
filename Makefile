@@ -7,7 +7,7 @@ LDFLAGS  := -X github.com/kh1011/creditproxy/pkg/version.Version=$(VERSION) \
 
 .PHONY: help deps fmt test version tag build-images release \
         run-gateway run-usage run-llmproxy run-ledger \
-        docker-up docker-down docker-logs smoke smoke-bdd
+        docker-up docker-up-smoke docker-down docker-logs smoke smoke-bdd
 
 help:
 	@echo "Available targets:"
@@ -23,12 +23,13 @@ help:
 	@echo ""
 	@echo "  Docker"
 	@echo "  make docker-up    - Build and start all services with Docker Compose"
+	@echo "  make docker-up-smoke - Like docker-up but pins INITIAL_CREDITS=0 (deterministic smoke tests)"
 	@echo "  make docker-down  - Stop and remove Docker Compose services"
 	@echo "  make docker-logs  - Tail Docker Compose logs"
 	@echo ""
 	@echo "  Testing"
 	@echo "  make smoke        - Run curl smoke flow (requires running stack)"
-	@echo "  make smoke-bdd    - Run BDD smoke tests (requires running stack)"
+	@echo "  make smoke-bdd    - Run BDD smoke tests (requires 'make docker-up-smoke')"
 	@echo ""
 	@echo "  Release"
 	@echo "  make version      - Print current version and commit"
@@ -63,6 +64,11 @@ run-ledger:
 
 docker-up:
 	docker compose up --build -d
+
+# Deterministic stack for the BDD smoke suite: new users get NO free grant, so
+# credits.feature's "purchase N -> balance N" assertions hold from a zero base.
+docker-up-smoke:
+	INITIAL_CREDITS=0 docker compose up --build -d
 
 docker-down:
 	docker compose down

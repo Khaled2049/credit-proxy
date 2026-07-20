@@ -13,8 +13,9 @@ import (
 //
 // Required env vars: ANTHROPIC_API_KEY
 // Optional env vars:
-//   ANTHROPIC_MODEL    (default: claude-sonnet-4-6)
-//   ANTHROPIC_BASE_URL (default: https://api.anthropic.com/v1)
+//
+//	ANTHROPIC_MODEL    (default: claude-sonnet-4-6)
+//	ANTHROPIC_BASE_URL (default: https://api.anthropic.com/v1)
 type AnthropicProvider struct {
 	apiKey  string
 	model   string
@@ -58,6 +59,10 @@ func (a *AnthropicProvider) Generate(ctx context.Context, opts GenerateOpts) (Ge
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 		return GenerateResult{}, fmt.Errorf("anthropic decode: %w", err)
@@ -65,5 +70,11 @@ func (a *AnthropicProvider) Generate(ctx context.Context, opts GenerateOpts) (Ge
 	if len(gr.Content) == 0 {
 		return GenerateResult{}, fmt.Errorf("anthropic returned no content")
 	}
-	return GenerateResult{Output: gr.Content[0].Text, Model: gr.Model}, nil
+	return GenerateResult{
+		Output:           gr.Content[0].Text,
+		Model:            gr.Model,
+		PromptTokens:     gr.Usage.InputTokens,
+		CompletionTokens: gr.Usage.OutputTokens,
+		HasUsage:         gr.Usage.InputTokens > 0 || gr.Usage.OutputTokens > 0,
+	}, nil
 }

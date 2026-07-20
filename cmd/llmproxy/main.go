@@ -226,8 +226,15 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	promptTokens := tokens.Estimate(req.Prompt)
-	completionTokens := tokens.Estimate(result.Output)
+	// Bill the provider's real usage when it reports it; otherwise fall back to a
+	// heuristic estimate of the prompt/output text (mock, or providers/responses
+	// without a usage block).
+	promptTokens := result.PromptTokens
+	completionTokens := result.CompletionTokens
+	if !result.HasUsage {
+		promptTokens = tokens.Estimate(req.Prompt)
+		completionTokens = tokens.Estimate(result.Output)
+	}
 	httpx.WriteJSON(w, http.StatusOK, contracts.GenerateResponse{
 		Output: result.Output,
 		Model:  result.Model,
