@@ -1,6 +1,11 @@
 Feature: Credit Management
   Users can purchase credits and query their balance
 
+  # These scenarios assert exact balances from a zero base, so the stack must
+  # grant no free credits on first touch. Bring it up with `make docker-up-smoke`
+  # (INITIAL_CREDITS=0); the default stack grants INITIAL_CREDITS and will fail
+  # the "zero balance" / exact-amount assertions.
+
   Background:
     Given a unique test user
 

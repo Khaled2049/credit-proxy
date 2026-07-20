@@ -29,6 +29,7 @@ type server struct {
 	verifier        *authn.Verifier
 	maxOutputTokens int64
 	maxPromptChars  int
+	tokensPerCredit int64
 	rateLimiter     *userRateLimiter
 	internalToken   string
 }
@@ -48,6 +49,7 @@ func main() {
 		}),
 		maxOutputTokens: getenvInt64("MAX_OUTPUT_TOKENS", 8192),
 		maxPromptChars:  int(getenvInt64("MAX_PROMPT_CHARS", 64000)),
+		tokensPerCredit: getenvInt64("TOKENS_PER_CREDIT", 100),
 		rateLimiter:     newUserRateLimiter(int(getenvInt64("MAX_REQUESTS_PER_MINUTE_PER_USER", 10))),
 		internalToken:   strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_TOKEN")),
 	}
@@ -55,6 +57,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/generate", s.handleGenerate)
+	mux.HandleFunc("/v1/users/", s.handleUserBalance)
+	mux.HandleFunc("/v1/credits/purchase", s.handlePurchase)
 
 	log.Printf("gateway listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
@@ -65,6 +69,22 @@ func classifyReservationStatus(err error) int {
 	if errors.As(err, &upErr) {
 		switch upErr.StatusCode {
 		case http.StatusPaymentRequired, http.StatusTooManyRequests:
+			return upErr.StatusCode
+		}
+	}
+	return http.StatusServiceUnavailable
+}
+
+// classifyPurchaseStatus maps upstream usage-service failures for the purchase
+// proxy. A 404 means the usage purchase API is disabled (ENABLE_PURCHASE_API);
+// surface it as 503 so it isn't confused with an unknown gateway route.
+func classifyPurchaseStatus(err error) int {
+	var upErr *httpx.UpstreamError
+	if errors.As(err, &upErr) {
+		switch upErr.StatusCode {
+		case http.StatusNotFound:
+			return http.StatusServiceUnavailable
+		case http.StatusBadRequest, http.StatusPaymentRequired, http.StatusTooManyRequests:
 			return upErr.StatusCode
 		}
 	}
@@ -137,7 +157,11 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
 
-	promptToks, estimatedTotal := tokens.EstimatePromptAndMaxCompletion(req.Prompt, req.MaxOutputTokens)
+	// Authorization hold: reserve the true token ceiling (prompt + maxOutput),
+	// converted to credits via TOKENS_PER_CREDIT. Commit reconciles down to the
+	// provider's real usage below.
+	promptToks, estimatedTokens := tokens.EstimatePromptAndMaxCompletion(req.Prompt, req.MaxOutputTokens)
+	estimatedCredits := tokens.ToCredits(estimatedTokens, s.tokensPerCredit)
 	reservationID := ""
 
 	if !isBYOK {
@@ -145,7 +169,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		reserveReq := contracts.ReservationRequest{
 			ReservationID:    reservationID,
 			UserID:           billingUserID,
-			EstimatedCredits: estimatedTotal,
+			EstimatedCredits: estimatedCredits,
 			TTLSeconds:       180,
 		}
 		var reserveResp contracts.ReservationResponse
@@ -159,8 +183,8 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			UserID:         billingUserID,
 			ReservationID:  reservationID,
 			EventType:      "credits_reserved",
-			Credits:        estimatedTotal,
-			Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTotal},
+			Credits:        estimatedCredits,
+			Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTokens},
 		})
 	}
 
@@ -189,7 +213,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				UserID:         billingUserID,
 				ReservationID:  reservationID,
 				EventType:      "credits_released",
-				Credits:        estimatedTotal,
+				Credits:        estimatedCredits,
 				Payload:        map[string]any{"reason": "llm_failure"},
 			})
 		}
@@ -198,7 +222,10 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actualCredits := genResp.Usage.TotalTokens
+	// Reconcile to the provider's real usage (llmproxy reports actual tokens when
+	// the provider returns them; otherwise a heuristic estimate).
+	actualTokens := genResp.Usage.TotalTokens
+	actualCredits := tokens.ToCredits(actualTokens, s.tokensPerCredit)
 	if !isBYOK {
 		if err := s.commitReservation(r.Context(), billingUserID, reservationID, actualCredits); err != nil {
 			_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
@@ -226,7 +253,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		EventType:      eventType,
 		Credits:        actualCredits,
 		Payload: map[string]any{
-			"estimated_credits": estimatedTotal,
+			"estimated_credits": estimatedCredits,
 			"actual_tokens":     genResp.Usage,
 			"model":             genResp.Model,
 			"byok":              isBYOK,
@@ -236,11 +263,77 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"reservation_id":    reservationID,
 		"idempotency_key":   req.IdempotencyKey,
-		"estimated_credits": estimatedTotal,
+		"estimated_credits": estimatedCredits,
 		"actual_credits":    actualCredits,
 		"byok":              isBYOK,
 		"response":          genResp,
 	})
+}
+
+// handleUserBalance proxies GET /v1/users/{userId}/balance to the usage service.
+// The path-supplied user id is authenticated/cross-checked against the caller's
+// forwarded identity via the same verifier used by generate.
+func (s *server) handleUserBalance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/v1/users/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "balance" || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	billingUserID, authErr := s.verifier.ResolveBillingUser(r.Context(), r, parts[0])
+	if authErr != nil {
+		http.Error(w, authErr.Message, authErr.StatusCode)
+		return
+	}
+
+	reqID := ids.New("req")
+	var balance contracts.BalanceResponse
+	url := fmt.Sprintf("%s/v1/users/%s/balance", s.usageURL, billingUserID)
+	if err := httpx.GetJSON(r.Context(), s.client, url, &balance, nil); err != nil {
+		log.Printf("balance lookup failed req=%s user=%s: %v", reqID, billingUserID, err)
+		http.Error(w, "unable to fetch balance (ref "+reqID+")", classifyReservationStatus(err))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, balance)
+}
+
+// handlePurchase proxies POST /v1/credits/purchase to the usage service. The
+// usage endpoint is itself gated behind ENABLE_PURCHASE_API; when disabled it
+// returns 404, which we surface as 503 so callers can distinguish it from an
+// unknown route.
+func (s *server) handlePurchase(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req contracts.PurchaseCreditsRequest
+	if err := httpx.ReadJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Credits <= 0 {
+		http.Error(w, "credits must be positive", http.StatusBadRequest)
+		return
+	}
+	billingUserID, authErr := s.verifier.ResolveBillingUser(r.Context(), r, req.UserID)
+	if authErr != nil {
+		http.Error(w, authErr.Message, authErr.StatusCode)
+		return
+	}
+
+	reqID := ids.New("req")
+	purchaseReq := contracts.PurchaseCreditsRequest{UserID: billingUserID, Credits: req.Credits}
+	var out map[string]any
+	if err := httpx.PostJSON(r.Context(), s.client, s.usageURL+"/v1/credits/purchase", purchaseReq, &out, nil); err != nil {
+		log.Printf("purchase failed req=%s user=%s: %v", reqID, billingUserID, err)
+		http.Error(w, "unable to purchase credits (ref "+reqID+")", classifyPurchaseStatus(err))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 func (s *server) commitReservation(ctx context.Context, userID, reservationID string, actualCredits int64) error {

@@ -147,7 +147,12 @@ resource "google_cloud_run_v2_service" "usage" {
 
       env {
         name  = "ENABLE_PURCHASE_API"
-        value = "false"
+        value = "true"
+      }
+
+      env {
+        name  = "MAX_PURCHASES_PER_DAY_PER_USER"
+        value = var.max_purchases_per_day_per_user
       }
 
       env {
@@ -504,6 +509,11 @@ resource "google_cloud_run_v2_service" "gateway" {
       env {
         name  = "LEDGER_SERVICE_URL"
         value = google_cloud_run_v2_service.ledger.uri
+      }
+
+      env {
+        name  = "TOKENS_PER_CREDIT"
+        value = var.tokens_per_credit
       }
 
       env {

@@ -133,3 +133,44 @@ func assertProviderError(t *testing.T, err error, wantProvider string, wantStatu
 		t.Errorf("StatusCode = %d, want %d", perr.StatusCode, wantStatus)
 	}
 }
+
+func TestGeminiParsesUsageMetadata(t *testing.T) {
+	body := `{"candidates":[{"content":{"parts":[{"text":"hello there"}]}}],` +
+		`"usageMetadata":{"promptTokenCount":123,"candidatesTokenCount":45,"totalTokenCount":168}}`
+	g := &GeminiProvider{
+		apiKey:    "k",
+		model:     "gemini-2.5-flash-lite",
+		client:    fixedResponseClient(200, body),
+		userAgent: "test",
+	}
+	res, err := g.Generate(context.Background(), GenerateOpts{Prompt: "hi", MaxOutputTokens: 256})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if res.Output != "hello there" {
+		t.Errorf("Output = %q, want %q", res.Output, "hello there")
+	}
+	if !res.HasUsage {
+		t.Fatal("HasUsage = false, want true when usageMetadata present")
+	}
+	if res.PromptTokens != 123 || res.CompletionTokens != 45 {
+		t.Errorf("usage = %d/%d, want 123/45", res.PromptTokens, res.CompletionTokens)
+	}
+}
+
+func TestGeminiWithoutUsageMetadataHasNoUsage(t *testing.T) {
+	body := `{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}`
+	g := &GeminiProvider{
+		apiKey:    "k",
+		model:     "gemini-2.5-flash-lite",
+		client:    fixedResponseClient(200, body),
+		userAgent: "test",
+	}
+	res, err := g.Generate(context.Background(), GenerateOpts{Prompt: "hi", MaxOutputTokens: 256})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if res.HasUsage {
+		t.Error("HasUsage = true, want false when usageMetadata absent (caller falls back to estimate)")
+	}
+}

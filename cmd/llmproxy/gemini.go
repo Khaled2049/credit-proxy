@@ -65,6 +65,11 @@ func (g *GeminiProvider) Generate(ctx context.Context, opts GenerateOpts) (Gener
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount     int64 `json:"promptTokenCount"`
+			CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+			TotalTokenCount      int64 `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 		return GenerateResult{}, err
@@ -72,8 +77,12 @@ func (g *GeminiProvider) Generate(ctx context.Context, opts GenerateOpts) (Gener
 	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
 		return GenerateResult{}, fmt.Errorf("gemini returned no candidates")
 	}
+	um := gr.UsageMetadata
 	return GenerateResult{
-		Output: gr.Candidates[0].Content.Parts[0].Text,
-		Model:  g.model,
+		Output:           gr.Candidates[0].Content.Parts[0].Text,
+		Model:            g.model,
+		PromptTokens:     um.PromptTokenCount,
+		CompletionTokens: um.CandidatesTokenCount,
+		HasUsage:         um.TotalTokenCount > 0,
 	}, nil
 }

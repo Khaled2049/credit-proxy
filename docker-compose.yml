@@ -21,7 +21,8 @@ services:
       USAGE_ADDR: ":8081"
       REDIS_URL: "redis://redis:6379"
       INITIAL_CREDITS: "${INITIAL_CREDITS:-10000}"
-      ENABLE_PURCHASE_API: "${ENABLE_PURCHASE_API:-false}"
+      ENABLE_PURCHASE_API: "${ENABLE_PURCHASE_API:-true}"
+      MAX_PURCHASES_PER_DAY_PER_USER: "${MAX_PURCHASES_PER_DAY_PER_USER:-3}"
     depends_on:
       - redis
 
@@ -72,6 +73,7 @@ services:
       LLM_PROXY_URL: "http://llmproxy:8082"
       LEDGER_SERVICE_URL: "http://ledger:8083"
       INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN:-}"
+      TOKENS_PER_CREDIT: "${TOKENS_PER_CREDIT:-100}"
     depends_on:
       - usage
       - llmproxy

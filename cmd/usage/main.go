@@ -76,6 +76,8 @@ type server struct {
 	rdb                *redis.Client
 	enablePurchase     bool
 	platformDailyLimit int64
+	initialCredits     int64
+	maxPurchasesPerDay int64
 }
 
 func main() {
@@ -95,10 +97,20 @@ func main() {
 	if platformDailyLimit <= 0 {
 		platformDailyLimit = 1400
 	}
+	initialCredits, _ := strconv.ParseInt(getenv("INITIAL_CREDITS", "10000"), 10, 64)
+	if initialCredits < 0 {
+		initialCredits = 0
+	}
+	maxPurchasesPerDay, _ := strconv.ParseInt(getenv("MAX_PURCHASES_PER_DAY_PER_USER", "3"), 10, 64)
+	if maxPurchasesPerDay <= 0 {
+		maxPurchasesPerDay = 3
+	}
 	s := &server{
 		rdb:                rdb,
 		enablePurchase:     strings.EqualFold(getenv("ENABLE_PURCHASE_API", "false"), "true"),
 		platformDailyLimit: platformDailyLimit,
+		initialCredits:     initialCredits,
+		maxPurchasesPerDay: maxPurchasesPerDay,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
@@ -135,6 +147,34 @@ func (s *server) handlePurchase(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.UserID == "" || req.Credits <= 0 {
 		http.Error(w, "user_id and positive credits are required", http.StatusBadRequest)
+		return
+	}
+	// Per-user daily purchase cap, enforced atomically before any credits are
+	// minted so a burst of concurrent requests can't slip past it. Keyed on the
+	// UTC date; the counter auto-expires after 25h so it resets at midnight with
+	// no cleanup. Reuses the same increment-under-limit script as the platform cap.
+	today := time.Now().UTC().Format("2006-01-02")
+	purchaseCountKey := "user:purchases:" + req.UserID + ":" + today
+	allowed, err := s.rdb.Eval(
+		r.Context(),
+		platformDailyScript,
+		[]string{purchaseCountKey},
+		s.maxPurchasesPerDay,
+		90000,
+	).Int64()
+	if err != nil {
+		http.Error(w, "purchase limit check failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if allowed == 0 {
+		http.Error(w, "daily purchase limit reached", http.StatusTooManyRequests)
+		return
+	}
+	// Seed the free grant first so topping up before the first generation adds
+	// to the initial balance rather than clobbering it (IncrBy on an absent key
+	// would otherwise create it at just the purchased amount).
+	if err := s.ensureInitialCredits(r.Context(), req.UserID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	key := userCreditsKey(req.UserID)
@@ -189,9 +229,11 @@ func (s *server) handleCreateReservation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Grant free starting credits to new users (atomic: only sets if key doesn't exist).
-	initialCredits, _ := strconv.ParseInt(getenv("INITIAL_CREDITS", "10000"), 10, 64)
-	s.rdb.SetNX(r.Context(), userCreditsKey(req.UserID), initialCredits, 0)
+	// Grant free starting credits to new users (atomic: only sets if absent).
+	if err := s.ensureInitialCredits(r.Context(), req.UserID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	keys := []string{userCreditsKey(req.UserID), reservationKey(req.ReservationID)}
 	args := []any{req.UserID, req.EstimatedCredits, req.TTLSeconds}
@@ -313,6 +355,17 @@ func (s *server) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := parts[0]
+	if userID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	// Materialize the free grant so a brand-new user sees their real starting
+	// balance instead of 0 (which would otherwise trip the low-credit top-up
+	// nag in the UI before they've generated anything).
+	if err := s.ensureInitialCredits(r.Context(), userID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	bal, err := s.rdb.Get(r.Context(), userCreditsKey(userID)).Int64()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -326,6 +379,17 @@ func (s *server) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 		AvailableCredits: bal,
 		EffectiveCredits: bal,
 	})
+}
+
+// ensureInitialCredits grants a new user their free starting balance exactly
+// once. SetNX is atomic and only writes when the key is absent, so an existing
+// balance — including one legitimately spent down to 0 — is never overwritten.
+// Calling this from every entry point that reads or mutates a balance keeps the
+// lazy grant consistent: a user who checks their balance or tops up before their
+// first generation still receives (and keeps) the free credits, instead of
+// seeing 0 or having a top-up clobber the pending grant.
+func (s *server) ensureInitialCredits(ctx context.Context, userID string) error {
+	return s.rdb.SetNX(ctx, userCreditsKey(userID), s.initialCredits, 0).Err()
 }
 
 func userCreditsKey(userID string) string {

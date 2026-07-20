@@ -51,9 +51,16 @@ type GenerateOpts struct {
 }
 
 // GenerateResult is the normalised response returned by every Provider.
+// PromptTokens/CompletionTokens carry the provider's own reported usage when
+// available; HasUsage is false for providers that don't report it (mock, or a
+// response missing the usage block), in which case the caller falls back to a
+// heuristic estimate of the prompt/output text.
 type GenerateResult struct {
-	Output string
-	Model  string
+	Output           string
+	Model            string
+	PromptTokens     int64
+	CompletionTokens int64
+	HasUsage         bool
 }
 
 // Provider is the interface every LLM backend must implement.

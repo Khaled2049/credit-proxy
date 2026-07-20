@@ -13,8 +13,9 @@ import (
 //
 // Required env vars: none (runs locally by default)
 // Optional env vars:
-//   OLLAMA_BASE_URL  (default: http://localhost:11434)
-//   OLLAMA_MODEL     (default: llama3)
+//
+//	OLLAMA_BASE_URL  (default: http://localhost:11434)
+//	OLLAMA_MODEL     (default: llama3)
 type OllamaProvider struct {
 	baseURL string
 	model   string
@@ -53,11 +54,19 @@ func (o *OllamaProvider) Generate(ctx context.Context, opts GenerateOpts) (Gener
 	}
 
 	var gr struct {
-		Response string `json:"response"`
-		Model    string `json:"model"`
+		Response        string `json:"response"`
+		Model           string `json:"model"`
+		PromptEvalCount int64  `json:"prompt_eval_count"`
+		EvalCount       int64  `json:"eval_count"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 		return GenerateResult{}, fmt.Errorf("ollama decode: %w", err)
 	}
-	return GenerateResult{Output: gr.Response, Model: gr.Model}, nil
+	return GenerateResult{
+		Output:           gr.Response,
+		Model:            gr.Model,
+		PromptTokens:     gr.PromptEvalCount,
+		CompletionTokens: gr.EvalCount,
+		HasUsage:         gr.PromptEvalCount > 0 || gr.EvalCount > 0,
+	}, nil
 }
