@@ -1,0 +1,135 @@
+openapi: 3.0.3
+info:
+  title: creditProxy Ledger Service
+  description: |
+    Internal append-only audit log backed by Postgres. Records every credit
+    event (`credits_reserved`, `credits_committed`, `credits_released`,
+    `commit_failed`, `byok_generate`) but never affects balances. Writes are
+    idempotent on `idempotency_key`.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8083
+    description: Local / Docker
+tags:
+  - name: events
+  - name: system
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  version:
+                    type: string
+                  commit:
+                    type: string
+  /v1/events:
+    post:
+      tags: [events]
+      summary: Append a ledger event
+      description: |
+        Idempotent upsert — replaying the same `idempotency_key` is a no-op that
+        returns the originally stored row.
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LedgerEventRequest"
+      responses:
+        "200":
+          description: Event stored (or already existed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LedgerEventResponse"
+        "400":
+          description: idempotency_key, user_id, and event_type are required
+        "500":
+          description: Database error
+  /v1/users/{userId}/ledger:
+    get:
+      tags: [events]
+      summary: List a user's recent ledger events
+      description: Returns the 100 most recent events for the user, newest first.
+      operationId: getUserLedger
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          example: user_123
+      responses:
+        "200":
+          description: Recent events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LedgerEventResponse"
+        "500":
+          description: Database error
+components:
+  schemas:
+    LedgerEventRequest:
+      type: object
+      required: [idempotency_key, user_id, event_type]
+      properties:
+        idempotency_key:
+          type: string
+          example: idem_1a2b:commit
+        user_id:
+          type: string
+          example: user_123
+        reservation_id:
+          type: string
+          example: res_9f2c1a
+        event_type:
+          type: string
+          example: credits_committed
+          description: e.g. credits_reserved, credits_committed, credits_released, commit_failed, byok_generate
+        credits:
+          type: integer
+          format: int64
+          example: 3
+        payload:
+          type: object
+          additionalProperties: true
+          description: Arbitrary JSON stored as JSONB.
+    LedgerEventResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        idempotency_key:
+          type: string
+        user_id:
+          type: string
+        reservation_id:
+          type: string
+        event_type:
+          type: string
+        credits:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time

@@ -1,0 +1,279 @@
+openapi: 3.0.3
+info:
+  title: creditProxy Gateway
+  description: |
+    Public entry point for creditProxy. Authenticates callers, enforces per-user
+    rate limits, and orchestrates credit reservation → LLM generation → commit
+    across the usage, llmproxy, and ledger services.
+
+    With `AUTH_MODE=dev` (the Docker default) no auth headers are required —
+    identity is taken from `user_id` in the request body/path.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local / Docker
+tags:
+  - name: generation
+  - name: credits
+  - name: system
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /v1/generate:
+    post:
+      tags: [generation]
+      summary: Generate text via the configured LLM provider
+      description: |
+        Platform-credits path (default): estimates cost, reserves credits in the
+        usage service, calls llmproxy, then commits the reservation with the
+        provider's actual token usage.
+
+        BYOK path: when `byok_provider` + `byok_api_key` are set, credit
+        reservation is skipped entirely and the caller's own key is used.
+      operationId: generate
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+          description: Used when `idempotency_key` is absent from the body; auto-generated otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateRequest"
+            examples:
+              mock:
+                summary: Mock generation (no provider key needed)
+                value:
+                  user_id: user_123
+                  prompt: Explain Redis Lua scripts in one paragraph
+                  max_output_tokens: 256
+                  force_mock: true
+              byok:
+                summary: BYOK request (skips platform credits)
+                value:
+                  user_id: user_123
+                  prompt: Write a haiku about microservices
+                  byok_provider: gemini
+                  byok_api_key: YOUR_API_KEY
+                  byok_model: gemini-2.5-flash
+      responses:
+        "200":
+          description: Generation succeeded and credits were reconciled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayGenerateResponse"
+        "400":
+          description: Missing prompt, prompt over MAX_PROMPT_CHARS, or max_output_tokens over MAX_OUTPUT_TOKENS
+        "401":
+          description: Authentication failed (dev_strict / production modes)
+        "402":
+          description: Insufficient credits to reserve
+        "409":
+          description: Commit of the reservation failed after generation
+        "429":
+          description: Per-user rate limit or platform daily request limit exceeded
+        "502":
+          description: LLM provider failure (reservation released)
+        "503":
+          description: Usage service unavailable
+  /v1/users/{userId}/balance:
+    get:
+      tags: [credits]
+      summary: Get a user's credit balance
+      description: Proxies to the usage service. The path user id is cross-checked against the caller's authenticated identity.
+      operationId: getUserBalance
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Current balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BalanceResponse"
+        "401":
+          description: Authentication failed
+        "503":
+          description: Usage service unavailable
+  /v1/credits/purchase:
+    post:
+      tags: [credits]
+      summary: Purchase credits
+      description: |
+        Proxies to the usage service. Returns 503 when the usage purchase API is
+        disabled (`ENABLE_PURCHASE_API=false`).
+      operationId: purchaseCredits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PurchaseCreditsRequest"
+      responses:
+        "200":
+          description: Credits added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseCreditsResponse"
+        "400":
+          description: credits must be positive
+        "401":
+          description: Authentication failed
+        "429":
+          description: Per-user daily purchase limit reached
+        "503":
+          description: Purchase API disabled or usage service unavailable
+components:
+  parameters:
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema:
+        type: string
+      example: user_123
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+        commit:
+          type: string
+    GenerateRequest:
+      type: object
+      required: [prompt]
+      properties:
+        user_id:
+          type: string
+          description: Billing user. Required in dev mode; derived from the Firebase token in dev_strict/production.
+          example: user_123
+        prompt:
+          type: string
+          example: Explain Redis Lua scripts in one paragraph
+        max_output_tokens:
+          type: integer
+          format: int64
+          description: Defaults to 256; capped by MAX_OUTPUT_TOKENS (8192).
+          example: 512
+        temperature:
+          type: number
+          format: double
+          example: 0.7
+        force_mock:
+          type: boolean
+          description: Route to the mock provider regardless of configuration.
+        idempotency_key:
+          type: string
+          description: Deduplicates ledger events; falls back to the Idempotency-Key header, else auto-generated.
+        byok_provider:
+          type: string
+          enum: [gemini, openai, anthropic, claude]
+          description: With byok_api_key, uses the caller's own key and skips platform credits.
+        byok_api_key:
+          type: string
+        byok_model:
+          type: string
+          description: Optional model override for the BYOK provider.
+    GatewayGenerateResponse:
+      type: object
+      properties:
+        reservation_id:
+          type: string
+          description: Empty for BYOK requests.
+          example: res_9f2c…
+        idempotency_key:
+          type: string
+          example: idem_1a2b…
+        estimated_credits:
+          type: integer
+          format: int64
+          example: 8
+        actual_credits:
+          type: integer
+          format: int64
+          example: 3
+        byok:
+          type: boolean
+        response:
+          $ref: "#/components/schemas/GenerateResponse"
+    GenerateResponse:
+      type: object
+      properties:
+        output:
+          type: string
+        model:
+          type: string
+          example: gemini-2.5-flash-lite
+        usage:
+          $ref: "#/components/schemas/GenerateUsage"
+    GenerateUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+          format: int64
+        completion_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+    BalanceResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        available_credits:
+          type: integer
+          format: int64
+        reserved_credits:
+          type: integer
+          format: int64
+        effective_credits:
+          type: integer
+          format: int64
+        last_reservation_id:
+          type: string
+    PurchaseCreditsRequest:
+      type: object
+      required: [credits]
+      properties:
+        user_id:
+          type: string
+          example: user_123
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+          example: 5000
+    PurchaseCreditsResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        purchased_credits:
+          type: integer
+          format: int64
+        available_credits:
+          type: integer
+          format: int64

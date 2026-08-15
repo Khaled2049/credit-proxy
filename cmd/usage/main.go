@@ -106,7 +106,11 @@ func main() {
 		maxPurchasesPerDay = 3
 	}
 	s := &server{
-		rdb:                rdb,
+		rdb: rdb,
+		// Defaults to false on purpose: top-up mints credits with no payment step,
+		// so an unconfigured deployment should not expose it. Every real
+		// deployment sets this explicitly (terraform var enable_purchase_api,
+		// .env.example, docker-compose) — the mismatch is fail-safe, not drift.
 		enablePurchase:     strings.EqualFold(getenv("ENABLE_PURCHASE_API", "false"), "true"),
 		platformDailyLimit: platformDailyLimit,
 		initialCredits:     initialCredits,

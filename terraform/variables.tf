@@ -119,3 +119,17 @@ variable "max_purchases_per_day_per_user" {
   type        = string
   default     = "3"
 }
+
+# Top-up currently MINTS credits with no payment step (MVP). That is bounded by
+# three independent caps, not by the balance itself: max_purchases_per_day_per_user
+# above, MAX_AI_USAGE per user per day in the Firebase layer, and
+# platform_daily_request_limit — which the usage service checks BEFORE reserving
+# any per-user credits, so a minted balance cannot buy requests past the platform
+# ceiling. Set this to "false" to disable top-up entirely (the usage endpoint then
+# 404s and the gateway surfaces that); it is a variable rather than a hardcoded
+# string so that flip needs no code change. Revisit when real payment lands.
+variable "enable_purchase_api" {
+  description = "Expose the credit top-up endpoint (usage service). Top-up mints credits with no payment while this is an MVP."
+  type        = string
+  default     = "true"
+}

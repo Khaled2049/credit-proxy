@@ -1,0 +1,295 @@
+openapi: 3.0.3
+info:
+  title: creditProxy Usage Service
+  description: |
+    Internal credit-accounting service backed by Redis. All balance mutations
+    (reserve / commit / release) run as atomic Lua scripts. New users are lazily
+    granted `INITIAL_CREDITS` on first contact. Normally called only by the
+    gateway, but directly reachable for local testing.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8081
+    description: Local / Docker
+tags:
+  - name: reservations
+  - name: credits
+  - name: system
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /v1/reservations:
+    post:
+      tags: [reservations]
+      summary: Reserve credits (place a hold)
+      description: |
+        Atomically checks the platform daily request cap
+        (`PLATFORM_DAILY_REQUEST_LIMIT`), grants initial credits to new users,
+        and decrements the user's balance by `estimated_credits`. The
+        reservation expires after `ttl_seconds` if never committed/released.
+      operationId: createReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReservationRequest"
+      responses:
+        "200":
+          description: Credits reserved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReservationResponse"
+        "400":
+          description: user_id and positive estimated_credits are required
+        "402":
+          description: Insufficient credits
+        "429":
+          description: Platform daily request limit reached
+        "500":
+          description: Redis error
+  /v1/reservations/{reservationId}/commit:
+    post:
+      tags: [reservations]
+      summary: Commit a reservation with actual cost
+      description: |
+        Reconciles the hold against real usage — refunds over-reservation,
+        charges the difference for under-reservation. Idempotent: committing an
+        already-committed reservation succeeds as a no-op.
+      operationId: commitReservation
+      parameters:
+        - $ref: "#/components/parameters/ReservationId"
+        - $ref: "#/components/parameters/UserIdQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommitReservationRequest"
+      responses:
+        "200":
+          description: Committed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reservation_id:
+                    type: string
+                  status:
+                    type: string
+                    example: committed
+                  actual_credits:
+                    type: integer
+                    format: int64
+        "400":
+          description: actual_credits cannot be negative / missing user_id
+        "402":
+          description: Insufficient credits to cover under-reservation
+        "409":
+          description: Reservation missing, expired, or already released
+  /v1/reservations/{reservationId}/release:
+    post:
+      tags: [reservations]
+      summary: Release a reservation (refund the hold)
+      description: |
+        Refunds the full reserved amount to the user's balance. Idempotent:
+        releasing an already-released reservation succeeds as a no-op.
+      operationId: releaseReservation
+      parameters:
+        - $ref: "#/components/parameters/ReservationId"
+        - $ref: "#/components/parameters/UserIdQuery"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseReservationRequest"
+      responses:
+        "200":
+          description: Released
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reservation_id:
+                    type: string
+                  status:
+                    type: string
+                    example: released
+                  reason:
+                    type: string
+        "400":
+          description: Missing user_id query param
+        "409":
+          description: Reservation missing, expired, or already committed
+  /v1/users/{userId}/balance:
+    get:
+      tags: [credits]
+      summary: Get a user's credit balance
+      description: Materializes the free initial-credit grant for brand-new users before reading.
+      operationId: getUserBalance
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Current balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BalanceResponse"
+  /v1/credits/purchase:
+    post:
+      tags: [credits]
+      summary: Purchase credits
+      description: |
+        Gated behind `ENABLE_PURCHASE_API` (returns 404 when disabled). Enforces
+        an atomic per-user daily purchase cap (`MAX_PURCHASES_PER_DAY_PER_USER`,
+        default 3), then adds credits to the balance.
+      operationId: purchaseCredits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PurchaseCreditsRequest"
+      responses:
+        "200":
+          description: Credits added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseCreditsResponse"
+        "400":
+          description: user_id and positive credits are required
+        "404":
+          description: Purchase API disabled (ENABLE_PURCHASE_API=false)
+        "429":
+          description: Daily purchase limit reached
+components:
+  parameters:
+    ReservationId:
+      in: path
+      name: reservationId
+      required: true
+      schema:
+        type: string
+      example: res_9f2c1a
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema:
+        type: string
+      example: user_123
+    UserIdQuery:
+      in: query
+      name: user_id
+      required: true
+      schema:
+        type: string
+      example: user_123
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+        commit:
+          type: string
+    ReservationRequest:
+      type: object
+      required: [user_id, estimated_credits]
+      properties:
+        reservation_id:
+          type: string
+          description: Optional; auto-generated (res_<uuid>) when absent.
+        user_id:
+          type: string
+          example: user_123
+        estimated_credits:
+          type: integer
+          format: int64
+          minimum: 1
+          example: 8
+        ttl_seconds:
+          type: integer
+          format: int64
+          description: Hold expiry; defaults to 120 (gateway sends 180).
+          example: 180
+    ReservationResponse:
+      type: object
+      properties:
+        reservation_id:
+          type: string
+        user_id:
+          type: string
+        reserved:
+          type: integer
+          format: int64
+        status:
+          type: string
+          example: reserved
+    CommitReservationRequest:
+      type: object
+      required: [actual_credits]
+      properties:
+        actual_credits:
+          type: integer
+          format: int64
+          minimum: 0
+          example: 3
+    ReleaseReservationRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          example: llm_failure
+    BalanceResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        available_credits:
+          type: integer
+          format: int64
+        effective_credits:
+          type: integer
+          format: int64
+    PurchaseCreditsRequest:
+      type: object
+      required: [user_id, credits]
+      properties:
+        user_id:
+          type: string
+          example: user_123
+        credits:
+          type: integer
+          format: int64
+          minimum: 1
+          example: 5000
+    PurchaseCreditsResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        purchased_credits:
+          type: integer
+          format: int64
+        available_credits:
+          type: integer
+          format: int64

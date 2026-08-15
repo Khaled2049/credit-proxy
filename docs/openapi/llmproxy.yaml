@@ -1,0 +1,143 @@
+openapi: 3.0.3
+info:
+  title: creditProxy LLM Proxy
+  description: |
+    Internal provider adapter — the only service that talks to actual LLM APIs.
+    The server-wide provider is chosen at startup (`LLM_PROVIDER`: gemini,
+    openai, anthropic, ollama, mock). Per-request overrides: `force_mock: true`
+    routes to the mock provider; BYOK fields build a one-off provider from the
+    caller's own API key.
+
+    When `INTERNAL_SERVICE_TOKEN` is configured, `/v1/generate` requires the
+    `X-Internal-Token` header (sent by the gateway).
+  version: 1.0.0
+servers:
+  - url: http://localhost:8082
+    description: Local / Docker
+tags:
+  - name: generation
+  - name: system
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Health check (reports active provider)
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  version:
+                    type: string
+                  commit:
+                    type: string
+                  provider:
+                    type: string
+                    example: mock
+  /v1/generate:
+    post:
+      tags: [generation]
+      summary: Generate text with the configured (or BYOK) provider
+      description: |
+        Returns the raw generation result. Token usage is the provider's real
+        count when reported; otherwise a heuristic estimate (~1.3 tokens/word).
+        Provider errors return a generic message with an `llm_…` correlation ref
+        while forwarding a classified status code.
+      operationId: generate
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateRequest"
+            examples:
+              mock:
+                summary: Force the mock provider
+                value:
+                  user_id: user_123
+                  prompt: Say hello
+                  force_mock: true
+      responses:
+        "200":
+          description: Generation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateResponse"
+        "400":
+          description: Missing prompt or invalid BYOK config
+        "401":
+          description: Missing or invalid X-Internal-Token
+        "429":
+          description: Provider rate limit (forwarded)
+        "502":
+          description: Provider failure
+components:
+  securitySchemes:
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: Shared secret (INTERNAL_SERVICE_TOKEN). Not enforced when unset.
+  schemas:
+    GenerateRequest:
+      type: object
+      required: [prompt]
+      properties:
+        user_id:
+          type: string
+          example: user_123
+        prompt:
+          type: string
+          example: Explain Redis Lua scripts in one paragraph
+        max_output_tokens:
+          type: integer
+          format: int64
+          description: Defaults to 256.
+        temperature:
+          type: number
+          format: double
+          description: Defaults to 0.7.
+        force_mock:
+          type: boolean
+        reservation_id:
+          type: string
+          description: Passed through by the gateway for correlation; unused here.
+        idempotency_key:
+          type: string
+        byok_provider:
+          type: string
+          enum: [gemini, openai, anthropic, claude]
+        byok_api_key:
+          type: string
+        byok_model:
+          type: string
+    GenerateResponse:
+      type: object
+      properties:
+        output:
+          type: string
+        model:
+          type: string
+          example: gemini-2.5-flash-lite
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+              format: int64
+            completion_tokens:
+              type: integer
+              format: int64
+            total_tokens:
+              type: integer
+              format: int64

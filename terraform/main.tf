@@ -147,7 +147,7 @@ resource "google_cloud_run_v2_service" "usage" {
 
       env {
         name  = "ENABLE_PURCHASE_API"
-        value = "true"
+        value = var.enable_purchase_api
       }
 
       env {
