@@ -4,19 +4,30 @@ on:
   pull_request:
     branches: [main]
 
+# A new push to the same PR makes the in-flight run obsolete.
+concurrency:
+  group: pr-creditproxy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   validate:
     name: Validate Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Go 1.22
+      # go-version-file, not a literal: go.mod already declares the toolchain
+      # (1.25.0), and a hardcoded 1.22 here failed to build it at all.
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Download dependencies
@@ -32,7 +43,7 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.0
+          terraform_version: 1.14.4
 
       - name: Terraform format check
         working-directory: ./terraform
