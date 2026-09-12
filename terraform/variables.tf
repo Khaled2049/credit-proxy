@@ -133,3 +133,26 @@ variable "enable_purchase_api" {
   type        = string
   default     = "true"
 }
+
+# Platform-wide daily credit ceiling for non-BYOK inference, enforced atomically
+# in the usage service alongside platform_daily_request_limit. The request cap
+# bounds how many calls are made; this bounds how large they are.
+#
+# Keep it above the worst case the request cap already permits (1400 requests x
+# ~100 credits is ~140k) so it stays a backstop instead of quietly becoming the
+# real limit on /v1/generate.
+variable "platform_daily_credit_limit" {
+  description = "Hard cap on platform-funded credits reserved per UTC day (usage service)."
+  type        = string
+  default     = "150000"
+}
+
+# Kill switch for platform-funded inference. "false" refuses platform billing at
+# the gateway while leaving BYOK and force_mock working, so it degrades the
+# platform rather than taking every path down. A variable, not a constant, so
+# flipping it needs no code change.
+variable "platform_inference_enabled" {
+  description = "Allow platform-funded (non-BYOK) inference through the gateway."
+  type        = string
+  default     = "true"
+}

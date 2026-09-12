@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+
+	"github.com/kh1011/creditproxy/pkg/contracts"
 )
 
 // ProviderError wraps a non-2xx response from an upstream LLM provider API.
@@ -70,4 +72,25 @@ type Provider interface {
 	Generate(ctx context.Context, opts GenerateOpts) (GenerateResult, error)
 	// Name returns a human-readable identifier used in logs and healthz.
 	Name() string
+}
+
+// ChatOpts holds the per-request parameters for a chat turn.
+type ChatOpts struct {
+	Messages        []contracts.ChatMessage
+	Tools           []contracts.ToolSchema
+	ToolChoice      *contracts.ToolChoice
+	MaxOutputTokens int64
+	Temperature     float64
+}
+
+// ChatProvider is the streaming, tool-calling half of a backend. It is a
+// separate interface rather than extra methods on Provider so a backend can
+// support /v1/generate without yet supporting /v1/chat; handleChat returns 501
+// for a provider that does not implement it.
+//
+// emit is called once per normalized event, in order. An error from emit means
+// the client is gone: the provider must stop and return it.
+type ChatProvider interface {
+	Provider
+	Chat(ctx context.Context, opts ChatOpts, emit func(contracts.ChatEvent) error) error
 }

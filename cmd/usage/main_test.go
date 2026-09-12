@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,9 +23,10 @@ func newTestServer(t *testing.T, dailyLimit int64) (*server, *miniredis.Miniredi
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	// Default the per-user purchase cap high so purchase tests that don't
-	// exercise it aren't accidentally throttled; cap tests set it explicitly.
-	return &server{rdb: rdb, platformDailyLimit: dailyLimit, maxPurchasesPerDay: 100}, mr
+	// Default the per-user purchase cap and the platform credit budget high so
+	// tests that don't exercise them aren't accidentally throttled; the tests
+	// for those caps set them explicitly.
+	return &server{rdb: rdb, platformDailyLimit: dailyLimit, platformCreditLimit: 1_000_000, maxPurchasesPerDay: 100}, mr
 }
 
 func getBalance(t *testing.T, s *server, userID string) *httptest.ResponseRecorder {
@@ -286,5 +290,80 @@ func TestPlatformDailyCap_DoesNotConsumePerUserCreditsWhenBlocked(t *testing.T) 
 	bal, _ := s.rdb.Get(t.Context(), userCreditsKey("u1")).Int64()
 	if bal != 500 {
 		t.Fatalf("per-user balance should be untouched when platform cap blocks; got %d", bal)
+	}
+}
+
+func TestPlatformCreditBudget_ConcurrentReservationsStopAtLimit(t *testing.T) {
+	s, _ := newTestServer(t, 100)
+	s.platformCreditLimit = 100
+	s.initialCredits = 1000
+
+	const requests = 20
+	var successes atomic.Int64
+	var exhausted atomic.Int64
+	var wg sync.WaitGroup
+	for i := range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := postReservation(t, s, fmt.Sprintf("user-%d", i), 10)
+			switch w.Code {
+			case http.StatusOK:
+				successes.Add(1)
+			case http.StatusTooManyRequests:
+				if !strings.Contains(w.Body.String(), contracts.ErrPlatformBudgetExhausted) {
+					t.Errorf("unexpected 429 body: %s", w.Body.String())
+				}
+				exhausted.Add(1)
+			default:
+				t.Errorf("unexpected status %d: %s", w.Code, w.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := successes.Load(); got != 10 {
+		t.Fatalf("successful reservations = %d, want 10", got)
+	}
+	if got := exhausted.Load(); got != 10 {
+		t.Fatalf("budget refusals = %d, want 10", got)
+	}
+	day := time.Now().UTC().Format("2006-01-02")
+	if got := s.rdb.Get(t.Context(), platformCreditsKey(day)).Val(); got != "100" {
+		t.Fatalf("platform credit counter = %s, want 100", got)
+	}
+}
+
+func TestPlatformCreditBudget_ReconcilesReservationDay(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.platformCreditLimit = 1000
+	s.initialCredits = 1000
+
+	w := postReservation(t, s, "u1", 100)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reserve: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var reservation contracts.ReservationResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &reservation); err != nil {
+		t.Fatal(err)
+	}
+
+	originalDay := s.rdb.HGet(t.Context(), reservationKey(reservation.ReservationID), "platform_day").Val()
+	recordedDay := "2000-01-01"
+	s.rdb.HSet(t.Context(), reservationKey(reservation.ReservationID), "platform_day", recordedDay)
+	s.rdb.Set(t.Context(), platformCreditsKey(recordedDay), 100, 25*time.Hour)
+
+	body := strings.NewReader(`{"reason":"test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/reservations/"+reservation.ReservationID+"/release?user_id=u1", body)
+	rr := httptest.NewRecorder()
+	s.handleReservationAction(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("release: want 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := s.rdb.Get(t.Context(), platformCreditsKey(recordedDay)).Val(); got != "0" {
+		t.Fatalf("reservation-day budget = %s, want 0", got)
+	}
+	if got := s.rdb.Get(t.Context(), platformCreditsKey(originalDay)).Val(); got != "100" {
+		t.Fatalf("current-day budget = %s, want 100", got)
 	}
 }

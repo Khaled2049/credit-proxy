@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -31,6 +33,10 @@ func main() {
 	}
 	log.Printf("llmproxy using provider: %s", provider.Name())
 
+	if err := validateLocalUnmetered(provider, getenv("LOCAL_UNMETERED", "false")); err != nil {
+		log.Fatalf("local unmetered: %v", err)
+	}
+
 	s := &server{
 		provider: provider,
 		mock:     &MockProvider{},
@@ -41,6 +47,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/generate", requireInternalToken(internalToken, s.handleGenerate))
+	mux.HandleFunc("/v1/chat", requireInternalToken(internalToken, s.handleChat))
 
 	log.Printf("llmproxy listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
@@ -244,6 +251,43 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			TotalTokens:      promptTokens + completionTokens,
 		},
 	})
+}
+
+// validateLocalUnmetered refuses to start when LOCAL_UNMETERED is set without a
+// genuinely local provider. The gateway skips credit metering entirely on that
+// flag, so without this check it would be a switch that turns hosted inference
+// free.
+func validateLocalUnmetered(provider Provider, raw string) error {
+	if !strings.EqualFold(strings.TrimSpace(raw), "true") {
+		return nil
+	}
+	ollama, ok := provider.(*OllamaProvider)
+	if !ok {
+		return fmt.Errorf("LOCAL_UNMETERED requires LLM_PROVIDER=ollama, got %s", provider.Name())
+	}
+	return requireLocalHost(ollama.baseURL)
+}
+
+func requireLocalHost(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("unparseable OLLAMA_BASE_URL: %w", err)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("OLLAMA_BASE_URL has no host")
+	}
+	// A dotless name is a container/LAN hostname (docker-compose "ollama"), and
+	// host.docker.internal is how a container reaches an Ollama running on the
+	// host — the normal local-dev path. Both are as local as an IP here.
+	if host == "localhost" || host == "host.docker.internal" || !strings.Contains(host, ".") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil &&
+		(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
+		return nil
+	}
+	return fmt.Errorf("LOCAL_UNMETERED requires a local OLLAMA_BASE_URL, got host %q", host)
 }
 
 func requireInternalToken(token string, next http.HandlerFunc) http.HandlerFunc {

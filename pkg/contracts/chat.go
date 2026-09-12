@@ -185,3 +185,9 @@ type ChatResponse struct {
 // mismatch is rejected rather than negotiated, matching the assistant
 // protocol's single-version policy.
 const ChatContractVersion = 1
+
+// ErrPlatformBudgetExhausted is the marker the usage service returns when the
+// platform-wide daily credit budget is spent. It travels in the response body
+// so the gateway can tell it apart from a per-user 429 without a second field
+// on every error shape.
+const ErrPlatformBudgetExhausted = "platform_budget_exhausted"
