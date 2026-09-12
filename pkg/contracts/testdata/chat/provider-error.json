@@ -1,0 +1,27 @@
+{
+  "name": "provider-error",
+  "description": "Mid-stream upstream failure; the message is neutral, never a provider body.",
+  "contractVersion": 1,
+  "request": {
+    "version": 1,
+    "user_id": "uid-1",
+    "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "Continue." }] }],
+    "max_output_tokens": 1024,
+    "stream": true,
+    "reservation_id": "res-3"
+  },
+  "stream": [
+    { "type": "text_delta", "provider": "gemini", "model": "gemini-2.5-flash-lite", "text": "The light" },
+    {
+      "type": "error",
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "error": {
+        "code": "provider_unavailable",
+        "message": "The upstream model provider is unavailable.",
+        "retryable": true
+      },
+      "finish_reason": "error"
+    }
+  ]
+}

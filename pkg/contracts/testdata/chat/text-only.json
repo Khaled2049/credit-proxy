@@ -1,0 +1,37 @@
+{
+  "name": "text-only",
+  "description": "A platform-billed text turn with no tools.",
+  "contractVersion": 1,
+  "request": {
+    "version": 1,
+    "user_id": "uid-1",
+    "messages": [
+      {
+        "role": "system",
+        "parts": [{ "type": "text", "text": "You are a writing assistant." }]
+      },
+      {
+        "role": "user",
+        "parts": [{ "type": "text", "text": "Tighten this paragraph." }]
+      }
+    ],
+    "max_output_tokens": 1024,
+    "temperature": 0.7,
+    "stream": true,
+    "reservation_id": "res-1",
+    "idempotency_key": "idem-1",
+    "estimated_credits": 12
+  },
+  "stream": [
+    { "type": "text_delta", "provider": "gemini", "model": "gemini-2.5-flash-lite", "text": "The lighthouse " },
+    { "type": "text_delta", "text": "had been dark for a year." },
+    {
+      "type": "usage",
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "usage": { "prompt_tokens": 412, "completion_tokens": 9, "total_tokens": 421 },
+      "credits": 5
+    },
+    { "type": "done", "finish_reason": "stop" }
+  ]
+}

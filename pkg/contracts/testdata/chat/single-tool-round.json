@@ -1,0 +1,56 @@
+{
+  "name": "single-tool-round",
+  "description": "One tool call, its result fed back, then text.",
+  "contractVersion": 1,
+  "request": {
+    "version": 1,
+    "user_id": "uid-1",
+    "messages": [
+      { "role": "user", "parts": [{ "type": "text", "text": "How many chapters?" }] },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool_call",
+            "tool_call_id": "call-1",
+            "name": "get_story_overview",
+            "arguments": {}
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "parts": [{ "type": "text", "text": "{\"title\":\"Saltmarsh\",\"chapter_count\":3}" }]
+      }
+    ],
+    "tools": [
+      {
+        "name": "get_story_overview",
+        "description": "Metadata and ordered chapter titles.",
+        "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+      }
+    ],
+    "tool_choice": { "mode": "auto" },
+    "max_output_tokens": 512,
+    "stream": true
+  },
+  "stream": [
+    {
+      "type": "tool_call_delta",
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "tool_call": { "index": 0, "tool_call_id": "call-1", "name": "get_story_overview" }
+    },
+    { "type": "tool_call_delta", "tool_call": { "index": 0, "arguments_delta": "{}" } },
+    { "type": "text_delta", "text": "Saltmarsh has three chapters." },
+    {
+      "type": "usage",
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "usage": { "prompt_tokens": 530, "completion_tokens": 7, "total_tokens": 537 },
+      "credits": 6
+    },
+    { "type": "done", "finish_reason": "tool_calls" }
+  ]
+}
