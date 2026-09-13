@@ -81,6 +81,56 @@ paths:
           description: Provider rate limit (forwarded)
         "502":
           description: Provider failure
+  /v1/chat:
+    post:
+      tags: [generation]
+      summary: Provider-neutral chat with tool calling
+      description: |
+        Distinct from `/v1/generate`, which stays for chapter generation, prose
+        enhancement, next-line suggestions and the wizard. Unlike that endpoint,
+        `max_output_tokens` is **required**: a reservation holds the true
+        ceiling (`prompt + max_output`) converted to credits and must be sized
+        before the first streamed byte, so there is no later point at which an
+        omitted ceiling could be resolved.
+
+        `stream: true` responds with `text/event-stream` carrying `ChatEvent`
+        frames; otherwise the response is a single `ChatResponse`.
+
+        The SSE response is not opened until the first event, so a provider that
+        fails before producing anything still returns a real HTTP status. That
+        is what lets the gateway tell "nothing was billable" apart from "the
+        stream died partway".
+
+        The mock provider is scripted from the contract fixtures: put
+        `__script: <fixture>` in the last user message to replay one (default
+        `text-only`), `__delay: <ms>` to pace the frames, or `__script: hang` to
+        block until the caller disconnects.
+      operationId: postChat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Completion, or an SSE stream of normalized events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+            text/event-stream:
+              schema:
+                type: string
+                description: "`data: <ChatEvent>` frames separated by a blank line"
+        "400":
+          description: Malformed request, unsupported `version`, or `max_output_tokens` above the gateway ceiling
+        "402":
+          description: Insufficient credits (platform billing only)
+        "429":
+          description: Provider rate limit
+        "501":
+          description: The configured provider does not implement chat
 components:
   securitySchemes:
     internalToken:
@@ -89,6 +139,142 @@ components:
       name: X-Internal-Token
       description: Shared secret (INTERNAL_SERVICE_TOKEN). Not enforced when unset.
   schemas:
+    GenerateUsage:
+      type: object
+      description: Token counts as reported by the provider, or estimated when the provider returns no usage block.
+      properties:
+        prompt_tokens: { type: integer, format: int64 }
+        completion_tokens: { type: integer, format: int64 }
+        total_tokens: { type: integer, format: int64 }
+    ChatRequest:
+      type: object
+      required: [version, user_id, messages, max_output_tokens]
+      properties:
+        version:
+          type: integer
+          enum: [1]
+          description: Rejected rather than negotiated when unrecognized.
+        user_id: { type: string }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/ChatMessage" }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/ToolSchema" }
+        tool_choice: { $ref: "#/components/schemas/ToolChoice" }
+        max_output_tokens:
+          type: integer
+          format: int64
+          description: Required. Must be <= the gateway's MAX_OUTPUT_TOKENS.
+        temperature: { type: number }
+        stream: { type: boolean }
+        reservation_id: { type: string }
+        idempotency_key: { type: string }
+        estimated_credits: { type: integer, format: int64 }
+        force_mock: { type: boolean }
+        byok_provider:
+          type: string
+          enum: [gemini, claude, openai]
+          description: When set, the caller's own key is used and no platform credit is metered.
+        byok_api_key:
+          type: string
+          description: Never logged and never echoed in a response.
+        byok_model: { type: string }
+    ChatMessage:
+      type: object
+      required: [role, parts]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        parts:
+          type: array
+          items: { $ref: "#/components/schemas/ChatPart" }
+        tool_call_id:
+          type: string
+          description: Links a `tool` message to the call it answers.
+    ChatPart:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [text, tool_call]
+        text: { type: string }
+        tool_call_id: { type: string }
+        name: { type: string }
+        arguments: {}
+    ToolSchema:
+      type: object
+      required: [name, parameters]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        parameters:
+          description: JSON Schema for the tool's arguments; forwarded to the provider uninterpreted.
+    ToolChoice:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [auto, none, required]
+        name:
+          type: string
+          description: Pins a specific tool. Only meaningful with `required`.
+    ChatEvent:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [text_delta, tool_call_delta, usage, done, error]
+        provider: { type: string }
+        model: { type: string }
+        text: { type: string }
+        tool_call: { $ref: "#/components/schemas/ChatToolCallDelta" }
+        usage: { $ref: "#/components/schemas/GenerateUsage" }
+        credits:
+          type: integer
+          format: int64
+          description: Reconciled platform cost; absent or zero for BYOK.
+        finish_reason:
+          type: string
+          enum: [stop, length, tool_calls, error]
+        error: { $ref: "#/components/schemas/ChatError" }
+    ChatToolCallDelta:
+      type: object
+      required: [index]
+      properties:
+        index:
+          type: integer
+          description: Disambiguates parallel calls before an id is known.
+        tool_call_id: { type: string }
+        name: { type: string }
+        arguments_delta: { type: string }
+    ChatError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message:
+          type: string
+          description: Neutral and stable. Never an upstream provider body, which can echo the prompt.
+        retryable: { type: boolean }
+    ChatResponse:
+      type: object
+      required: [provider, model, parts, usage, credits, finish_reason]
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        parts:
+          type: array
+          items: { $ref: "#/components/schemas/ChatPart" }
+        usage: { $ref: "#/components/schemas/GenerateUsage" }
+        credits: { type: integer, format: int64 }
+        finish_reason:
+          type: string
+          enum: [stop, length, tool_calls, error]
     GenerateRequest:
       type: object
       required: [prompt]

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/kh1011/creditproxy/pkg/contracts"
@@ -18,6 +19,39 @@ func collectMockEvents(t *testing.T, messages []contracts.ChatMessage) []contrac
 		t.Fatal(err)
 	}
 	return events
+}
+
+func TestEditorRewriteMockReadsSelectionThenProposesLinkedEdit(t *testing.T) {
+	prompt := contracts.ChatMessage{
+		Role:  contracts.RoleUser,
+		Parts: []contracts.ChatPart{{Type: contracts.PartText, Text: "Tighten this. __script: editor-rewrite"}},
+	}
+	first := collectMockEvents(t, []contracts.ChatMessage{prompt})
+	if got := first[0].ToolCall.Name; got != "read_current_editor" {
+		t.Fatalf("first tool = %q, want read_current_editor", got)
+	}
+
+	toolResult := contracts.ChatMessage{
+		Role:       contracts.RoleTool,
+		ToolCallID: "mock-read-editor",
+		Parts:      []contracts.ChatPart{{Type: contracts.PartText, Text: `{"available":true,"chapter_id":"chapter-1","persisted_revision":4,"document_version":9,"selection":{"from":7,"to":12,"text":"brave"}}`}},
+	}
+	second := collectMockEvents(t, []contracts.ChatMessage{prompt, toolResult})
+	if got := second[0].ToolCall.Name; got != "propose_editor_edit" {
+		t.Fatalf("second tool = %q, want propose_editor_edit", got)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(second[1].ToolCall.ArgumentsDelta), &args); err != nil {
+		t.Fatal(err)
+	}
+	if args["chapterId"] != "chapter-1" || args["baseRevision"] != float64(4) {
+		t.Fatalf("proposal lost editor linkage: %#v", args)
+	}
+	operations := args["operations"].([]any)
+	replace := operations[0].(map[string]any)
+	if replace["originalText"] != "brave" {
+		t.Fatalf("original text = %#v, want brave", replace["originalText"])
+	}
 }
 
 func TestRunAwareMockUsesToolResultAsTheStepBoundary(t *testing.T) {

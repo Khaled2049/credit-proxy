@@ -25,10 +25,11 @@ import (
 //
 // With no directive the script is text-only.
 const (
-	defaultMockScript  = "text-only"
-	hangMockScript     = "hang"
-	runAwareMockScript = "tool-then-answer"
-	maxMockDelay       = 5 * time.Second
+	defaultMockScript   = "text-only"
+	hangMockScript      = "hang"
+	runAwareMockScript  = "tool-then-answer"
+	editorRewriteScript = "editor-rewrite"
+	maxMockDelay        = 5 * time.Second
 )
 
 var (
@@ -38,6 +39,13 @@ var (
 
 func (m *MockProvider) Chat(ctx context.Context, opts ChatOpts, emit func(contracts.ChatEvent) error) error {
 	script, delay := parseMockDirectives(opts.Messages)
+	if script == editorRewriteScript {
+		events, err := editorRewriteEvents(opts.Messages)
+		if err != nil {
+			return err
+		}
+		return emitMockEvents(ctx, events, delay, emit)
+	}
 	if script == runAwareMockScript {
 		script = "single-tool-round"
 		if hasToolResult(opts.Messages) {
@@ -55,6 +63,10 @@ func (m *MockProvider) Chat(ctx context.Context, opts ChatOpts, emit func(contra
 		return err
 	}
 
+	return emitMockEvents(ctx, events, delay, emit)
+}
+
+func emitMockEvents(ctx context.Context, events []contracts.ChatEvent, delay time.Duration, emit func(contracts.ChatEvent) error) error {
 	for _, event := range events {
 		if delay > 0 {
 			select {
@@ -70,6 +82,74 @@ func (m *MockProvider) Chat(ctx context.Context, opts ChatOpts, emit func(contra
 		}
 	}
 	return nil
+}
+
+func editorRewriteEvents(messages []contracts.ChatMessage) ([]contracts.ChatEvent, error) {
+	result := latestToolResult(messages)
+	if result == nil {
+		return mockToolCall("mock-read-editor", "read_current_editor", map[string]any{"selectionOnly": true}), nil
+	}
+	selection, _ := result["selection"].(map[string]any)
+	chapterID, _ := result["chapter_id"].(string)
+	original, _ := selection["text"].(string)
+	if chapterID == "" || original == "" {
+		return []contracts.ChatEvent{
+			{Type: contracts.ChatEventTextDelta, Provider: "mock", Model: "mock-editor", Text: "Select text in the editor before asking for a revision."},
+			{Type: contracts.ChatEventDone, FinishReason: contracts.FinishStop},
+		}, nil
+	}
+	proposal := map[string]any{
+		"chapterId":           chapterID,
+		"baseRevision":        result["persisted_revision"],
+		"baseDocumentVersion": result["document_version"],
+		"summary":             "Tighten the selected sentence.",
+		"operations": []any{map[string]any{
+			"type":            "replace",
+			"from":            selection["from"],
+			"to":              selection["to"],
+			"originalText":    original,
+			"replacementText": "Tightened: " + original,
+		}},
+	}
+	return mockToolCall("mock-propose-editor", "propose_editor_edit", proposal), nil
+}
+
+func latestToolResult(messages []contracts.ChatMessage) map[string]any {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if message.Role != contracts.RoleTool {
+			continue
+		}
+		for _, part := range message.Parts {
+			if part.Type != contracts.PartText {
+				continue
+			}
+			var result map[string]any
+			if json.Unmarshal([]byte(part.Text), &result) == nil {
+				return result
+			}
+		}
+	}
+	return nil
+}
+
+func mockToolCall(id, name string, arguments any) []contracts.ChatEvent {
+	raw, _ := json.Marshal(arguments)
+	return []contracts.ChatEvent{
+		{
+			Type: contracts.ChatEventToolCallDelta, Provider: "mock", Model: "mock-editor",
+			ToolCall: &contracts.ChatToolCallDelta{Index: 0, ToolCallID: id, Name: name},
+		},
+		{
+			Type:     contracts.ChatEventToolCallDelta,
+			ToolCall: &contracts.ChatToolCallDelta{Index: 0, ArgumentsDelta: string(raw)},
+		},
+		{
+			Type: contracts.ChatEventUsage, Provider: "mock", Model: "mock-editor",
+			Usage: &contracts.GenerateUsage{PromptTokens: 32, CompletionTokens: 16, TotalTokens: 48},
+		},
+		{Type: contracts.ChatEventDone, FinishReason: contracts.FinishToolCalls},
+	}
 }
 
 func hasToolResult(messages []contracts.ChatMessage) bool {
