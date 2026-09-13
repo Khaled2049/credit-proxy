@@ -19,14 +19,16 @@ import (
 // A caller picks a script with a directive in the last user message:
 //
 //	__script: multi-tool      replay pkg/contracts/testdata/chat/multi-tool.json
+//	__script: tool-then-answer emit a tool round, then text after its result
 //	__delay: 25               wait 25ms between frames
 //	__script: hang            emit nothing and block until the context is cancelled
 //
 // With no directive the script is text-only.
 const (
-	defaultMockScript = "text-only"
-	hangMockScript    = "hang"
-	maxMockDelay      = 5 * time.Second
+	defaultMockScript  = "text-only"
+	hangMockScript     = "hang"
+	runAwareMockScript = "tool-then-answer"
+	maxMockDelay       = 5 * time.Second
 )
 
 var (
@@ -36,6 +38,12 @@ var (
 
 func (m *MockProvider) Chat(ctx context.Context, opts ChatOpts, emit func(contracts.ChatEvent) error) error {
 	script, delay := parseMockDirectives(opts.Messages)
+	if script == runAwareMockScript {
+		script = "single-tool-round"
+		if hasToolResult(opts.Messages) {
+			script = "text-only"
+		}
+	}
 
 	if script == hangMockScript {
 		<-ctx.Done()
@@ -62,6 +70,15 @@ func (m *MockProvider) Chat(ctx context.Context, opts ChatOpts, emit func(contra
 		}
 	}
 	return nil
+}
+
+func hasToolResult(messages []contracts.ChatMessage) bool {
+	for _, message := range messages {
+		if message.Role == contracts.RoleTool {
+			return true
+		}
+	}
+	return false
 }
 
 func parseMockDirectives(messages []contracts.ChatMessage) (string, time.Duration) {
