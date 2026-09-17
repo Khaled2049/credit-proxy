@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Artifacts
+
+**Never publish an Artifact without explicit permission.** This overrides the
+default behaviour of publishing finished work proactively — assume the answer is
+no unless asked.
+
+Deliver documents, reports, plans and reviews as files in the repo, and say where
+they landed. If a shareable link would genuinely help, ask first and wait for a
+yes before publishing.
+
 ## Commands
 
 ```bash
@@ -45,6 +55,32 @@ Four Go microservices, each in `cmd/<name>/main.go` (single-file per service). S
 6. On success: commit reservation with actual token count (Lua reconciles over/under-spend)
 7. Emit `credits_committed` ledger event
 
+**Request flow for `POST /v1/chat` (gateway):** the streaming, tool-calling
+endpoint the assistant uses. Same trust chain and the same reserve/commit
+arithmetic, but the response arrives in pieces, so settlement is a state
+machine rather than one decision:
+
+1. Validate (`version`, required `max_output_tokens`, prompt size), resolve the
+   billing user, and check the chat rate bucket
+   (`MAX_CHAT_REQUESTS_PER_MINUTE_PER_USER` — separate from generate's, because
+   one assistant run is several chat calls)
+2. Refuse platform-funded work when `PLATFORM_INFERENCE_ENABLED=false`; BYOK and
+   `force_mock` still pass
+3. Reserve **before writing a byte**, so a refusal is an HTTP status rather than
+   an error frame after a 200
+4. Relay llmproxy's SSE frames, rewriting `credits` on the `usage` event
+5. Settle: reported usage commits the real cost; a failure before any output
+   releases; **anything else commits the full hold** — a dropped stream, a
+   client hangup or a missing usage block all leave the platform unable to know
+   what it was charged (`credits_committed_unknown` in the ledger)
+
+Settlement runs on a context detached from the request
+(`context.WithoutCancel`), because the most common reason a stream ends early is
+the client disconnecting — which would otherwise cancel the commit too.
+
+`stream: false` is served by letting llmproxy aggregate the same provider stream
+into one `ChatResponse`, so there is one aggregation implementation.
+
 *BYOK path (`byok_provider` + `byok_api_key` present):*
 1. Skip credit reservation entirely
 2. Call llmproxy with BYOK fields; llmproxy instantiates the provider from the request
@@ -62,10 +98,43 @@ Four Go microservices, each in `cmd/<name>/main.go` (single-file per service). S
 - `user:credits:<userID>` — integer balance per user
 - `reservation:<reservationID>` — hash with `user_id`, `amount`, `status`
 - `platform:daily:<YYYY-MM-DD>` — integer counter of non-BYOK requests today (auto-expires after 25 h)
+- `platform:credits:<YYYY-MM-DD>` — credits held platform-wide today (auto-expires after 25 h)
 
 All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `commitScript`, `releaseScript`) for atomicity. Commit script reconciles estimated vs. actual spend by adjusting balance inline. A fourth script (`platformDailyScript`) atomically increments the daily counter and rejects the request if it has reached `PLATFORM_DAILY_REQUEST_LIMIT` — this check runs before any per-user credit reservation and is skipped entirely for BYOK requests.
 
+A fifth script (`platformCreditsScript`) does the same for *credits*: the
+request cap bounds how many calls are made, this bounds how large they are,
+which matters once one assistant run makes several tool-calling round trips. It
+charges the estimate at reservation and reconciles on commit/release, so
+`commitScript` and `releaseScript` both return the reserved amount as a third
+element. Keep `PLATFORM_DAILY_CREDIT_LIMIT` above the worst case the request cap
+already permits or it quietly becomes the real limit on `/v1/generate` too.
+
 **Ledger service (Postgres):** Append-only `ledger_events` table. Idempotency enforced via `ON CONFLICT (idempotency_key) DO UPDATE` (upsert is a no-op). Schema auto-applied at startup — no migration runner needed.
+
+**Chat providers (`ChatProvider`):** `/v1/chat` needs streaming and tool calls,
+which `Provider.Generate` cannot express, so backends opt in through a second
+interface instead of widening the first. A provider that does not implement it
+returns 501 — mock, Ollama and Gemini do; OpenAI and Anthropic do not yet. The
+mock is scripted from the
+contract fixtures in `pkg/contracts/testdata/chat/` (embedded via
+`pkg/contracts/fixtures.go`): `__script: <fixture>` in the last user message
+replays one, `__delay: <ms>` paces the frames, `__script: hang` blocks until the
+caller disconnects.
+
+**Ollama** streams newline-delimited JSON from `/api/chat` and sends a tool call
+as one complete object; **Gemini** streams SSE from `streamGenerateContent` and
+has no tool-call id at all, so one is minted per call and the function *name* is
+recovered from the assistant turn when building `functionResponse`. Both
+normalize into the same `ChatEvent` stream, so nothing downstream branches on
+the provider. A model that ignores `tool_choice: required` fails with
+`unsupported_model` rather than returning prose the orchestrator would try to
+parse as a tool result.
+
+llmproxy does not open its SSE response until the first event, so a provider
+that fails before producing anything still returns a real HTTP status. That is
+what lets the gateway tell "nothing was billable" from "the stream died
+partway".
 
 **LLM proxy:** Supports Gemini, OpenAI, Anthropic, Ollama, and mock. Server-wide provider is selected at startup via env vars (`LLM_PROVIDER`, `LLM_MOCK_MODE`, `GEMINI_API_KEY`, etc.). Per-request **BYOK** overrides the server-wide provider: if `byok_provider` + `byok_api_key` are set in the request, `newProviderFromBYOK()` instantiates a fresh provider for that request only. Requires `INTERNAL_SERVICE_TOKEN` header from gateway when the token is configured.
 
@@ -74,7 +143,7 @@ All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `com
 **`pkg/` layout:**
 - `auth/` — `Verifier` struct: OIDC caller verification + Firebase ID token verification. Three modes: `dev` (no checks), `dev_strict` (Firebase only), `production` (OIDC + Firebase). Used by gateway to resolve `billingUserID`.
 - `contracts/` — all shared request/response structs
-- `httpx/` — thin helpers: `ReadJSON`, `WriteJSON`, `PostJSON`, `NewHTTPClient`
+- `httpx/` — thin helpers: `ReadJSON`, `WriteJSON`, `PostJSON`, `NewHTTPClient`, plus `PostSSE` and `NewStreamingHTTPClient` for the chat hop. The streaming client sets no overall `Timeout` (that covers the whole body and would kill a long stream); it bounds response *headers* instead.
 - `ids/` — prefixed ID generator (e.g. `ids.New("res")` → `res_<uuid>`)
 - `tokens/` — token estimation heuristics
 
@@ -92,6 +161,10 @@ All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `com
 | `LLM_MOCK_MODE` | `true` | Legacy fallback: if `LLM_PROVIDER` unset and this is `true`, use mock |
 | `INITIAL_CREDITS` | `10000` | Free tokens granted to new users on their first reservation (atomic `SetNX`) |
 | `PLATFORM_DAILY_REQUEST_LIMIT` | `1400` | Hard ceiling on non-BYOK platform requests per UTC day. Keeps total usage under the LLM provider's free-tier RPD. BYOK requests are never counted. |
+| `PLATFORM_DAILY_CREDIT_LIMIT` | `150000` | Hard ceiling on non-BYOK credits held per UTC day. Sized above what the request cap already allows so it is a backstop, not the binding limit. |
+| `PLATFORM_INFERENCE_ENABLED` | `true` | Kill switch. `false` refuses platform-funded inference at the gateway; BYOK and `force_mock` keep working. |
+| `MAX_CHAT_REQUESTS_PER_MINUTE_PER_USER` | `60` | Per-user rate bucket for `/v1/chat`, separate from generate's. |
+| `LOCAL_UNMETERED` | `false` | Skip credit metering because inference runs on local hardware; audited as `local_generate`. llmproxy refuses to start unless the provider is Ollama on a local address. Read by gateway **and** llmproxy; not exposed in Terraform. |
 | `GEMINI_API_KEY` | `""` | Required when `LLM_PROVIDER=gemini` |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | |
 | `OPENAI_API_KEY` | `""` | Required when `LLM_PROVIDER=openai` |

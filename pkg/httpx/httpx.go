@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,8 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// maxSSEFrameBytes bounds one `data:` frame; a provider that never emits a
+// newline must not grow the relay's buffer without limit.
+const maxSSEFrameBytes = 1 << 20
 
 // gcpIDToken fetches a GCP OIDC identity token for the given audience via the
 // GCE metadata server. Returns "" when not running on GCP (local dev / tests).
@@ -134,4 +140,69 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 		timeout = 15 * time.Second
 	}
 	return &http.Client{Timeout: timeout}
+}
+
+// NewStreamingHTTPClient returns a client for SSE hops. Client.Timeout covers
+// the whole response body, which would kill a long stream mid-flight, so the
+// bound moves to the response *headers* instead — a provider that never starts
+// answering still fails fast.
+func NewStreamingHTTPClient(headerTimeout time.Duration) *http.Client {
+	if headerTimeout <= 0 {
+		headerTimeout = 30 * time.Second
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = headerTimeout
+	return &http.Client{Transport: transport}
+}
+
+// PostSSE posts reqBody and invokes onEvent once per `data:` frame, passing the
+// raw payload so a relay can forward the same bytes it inspected. A non-2xx
+// response returns an UpstreamError before onEvent is ever called, which is
+// what lets a caller distinguish "the request was refused" from "the stream
+// broke partway".
+func PostSSE[TReq any](ctx context.Context, client *http.Client, url string, reqBody TReq, headers map[string]string, onEvent func([]byte) error) error {
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if token := gcpIDToken(ctx, url); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &UpstreamError{StatusCode: resp.StatusCode, Body: string(b)}
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEFrameBytes)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if err := onEvent([]byte(payload)); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }

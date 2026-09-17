@@ -156,6 +156,11 @@ resource "google_cloud_run_v2_service" "usage" {
       }
 
       env {
+        name  = "PLATFORM_DAILY_CREDIT_LIMIT"
+        value = var.platform_daily_credit_limit
+      }
+
+      env {
         name = "REDIS_URL"
         value_source {
           secret_key_ref {
@@ -514,6 +519,11 @@ resource "google_cloud_run_v2_service" "gateway" {
       env {
         name  = "TOKENS_PER_CREDIT"
         value = var.tokens_per_credit
+      }
+
+      env {
+        name  = "PLATFORM_INFERENCE_ENABLED"
+        value = var.platform_inference_enabled
       }
 
       env {

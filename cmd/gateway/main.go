@@ -32,6 +32,11 @@ type server struct {
 	tokensPerCredit int64
 	rateLimiter     *userRateLimiter
 	internalToken   string
+
+	streamClient             *http.Client
+	chatRateLimiter          *userRateLimiter
+	platformInferenceEnabled bool
+	localUnmetered           bool
 }
 
 func main() {
@@ -52,11 +57,20 @@ func main() {
 		tokensPerCredit: getenvInt64("TOKENS_PER_CREDIT", 100),
 		rateLimiter:     newUserRateLimiter(int(getenvInt64("MAX_REQUESTS_PER_MINUTE_PER_USER", 10))),
 		internalToken:   strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_TOKEN")),
+
+		streamClient: httpx.NewStreamingHTTPClient(30 * time.Second),
+		// One assistant run is several /v1/chat calls, so chat gets its own
+		// bucket; sharing /v1/generate's limit of 10/min would trip on a
+		// writer's second question.
+		chatRateLimiter:          newUserRateLimiter(int(getenvInt64("MAX_CHAT_REQUESTS_PER_MINUTE_PER_USER", 60))),
+		platformInferenceEnabled: getenvBool("PLATFORM_INFERENCE_ENABLED", true),
+		localUnmetered:           getenvBool("LOCAL_UNMETERED", false),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/generate", s.handleGenerate)
+	mux.HandleFunc("/v1/chat", s.handleChat)
 	mux.HandleFunc("/v1/users/", s.handleUserBalance)
 	mux.HandleFunc("/v1/credits/purchase", s.handlePurchase)
 
@@ -95,7 +109,7 @@ func classifyGenerationStatus(err error) int {
 	var upErr *httpx.UpstreamError
 	if errors.As(err, &upErr) {
 		switch upErr.StatusCode {
-		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusNotFound:
+		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusNotFound, http.StatusNotImplemented:
 			return upErr.StatusCode
 		}
 	}
@@ -368,6 +382,14 @@ func splitCSV(raw string) []string {
 		}
 	}
 	return out
+}
+
+func getenvBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	return strings.EqualFold(raw, "true")
 }
 
 func getenvInt64(key string, fallback int64) int64 {
