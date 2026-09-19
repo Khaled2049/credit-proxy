@@ -1,6 +1,6 @@
 # creditProxy
 
-**v0.2.0** — Credit-metered AI gateway for NovelSync. Routes LLM requests through a reserve/commit/release credit lifecycle so the platform never overspends, with full BYOK support that bypasses billing entirely.
+**v0.2.0** — Credit-metered AI gateway for TheTaleTribe. Routes LLM requests through a reserve/commit/release credit lifecycle so the platform never overspends, with full BYOK support that bypasses billing entirely.
 
 Four Go microservices, a Redis credit ledger, and a Postgres audit trail — all running in a single `docker compose up`.
 

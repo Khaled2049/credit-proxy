@@ -44,9 +44,10 @@ type ChatPart struct {
 	// Text is set when Type is "text".
 	Text string `json:"text,omitempty"`
 	// ToolCallID, Name and Arguments are set when Type is "tool_call".
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Arguments  any    `json:"arguments,omitempty"`
+	ToolCallID   string `json:"tool_call_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Arguments    any    `json:"arguments,omitempty"`
+	ProviderMeta any    `json:"provider_meta,omitempty"`
 }
 
 type ChatMessage struct {
@@ -146,6 +147,7 @@ type ChatToolCallDelta struct {
 	ToolCallID     string `json:"tool_call_id,omitempty"`
 	Name           string `json:"name,omitempty"`
 	ArgumentsDelta string `json:"arguments_delta,omitempty"`
+	ProviderMeta   any    `json:"provider_meta,omitempty"`
 }
 
 // ChatError is provider-neutral and safe to forward. Message is a stable

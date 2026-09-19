@@ -26,6 +26,7 @@ type geminiPart struct {
 		Name string          `json:"name"`
 		Args json.RawMessage `json:"args"`
 	} `json:"functionCall,omitempty"`
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
 }
 
 type geminiStreamFrame struct {
@@ -147,6 +148,7 @@ func (g *GeminiProvider) Chat(ctx context.Context, opts ChatOpts, emit func(cont
 							ToolCallID:     ids.New("call"),
 							Name:           part.FunctionCall.Name,
 							ArgumentsDelta: string(part.FunctionCall.Args),
+							ProviderMeta:   geminiProviderMeta(part.ThoughtSignature),
 						},
 					}); err != nil {
 						return err
@@ -252,12 +254,16 @@ func geminiContents(messages []contracts.ChatMessage) ([]map[string]any, map[str
 					}
 				case contracts.PartToolCall:
 					callNames[part.ToolCallID] = part.Name
-					parts = append(parts, map[string]any{
+					call := map[string]any{
 						"functionCall": map[string]any{
 							"name": part.Name,
 							"args": part.Arguments,
 						},
-					})
+					}
+					if signature := geminiThoughtSignature(part.ProviderMeta); signature != "" {
+						call["thoughtSignature"] = signature
+					}
+					parts = append(parts, call)
 				}
 			}
 			if len(parts) > 0 {
@@ -279,11 +285,113 @@ func geminiTools(tools []contracts.ToolSchema) []map[string]any {
 			declaration["description"] = tool.Description
 		}
 		if tool.Parameters != nil {
-			declaration["parameters"] = tool.Parameters
+			declaration["parameters"] = geminiParameters(tool.Parameters)
 		}
 		out = append(out, declaration)
 	}
 	return out
+}
+
+var geminiSchemaFields = map[string]bool{
+	"type":             true,
+	"format":           true,
+	"title":            true,
+	"description":      true,
+	"nullable":         true,
+	"enum":             true,
+	"items":            true,
+	"minItems":         true,
+	"maxItems":         true,
+	"properties":       true,
+	"required":         true,
+	"minProperties":    true,
+	"maxProperties":    true,
+	"propertyOrdering": true,
+	"minLength":        true,
+	"maxLength":        true,
+	"pattern":          true,
+	"minimum":          true,
+	"maximum":          true,
+	"anyOf":            true,
+	"default":          true,
+	"example":          true,
+}
+
+const geminiMaxRefDepth = 8
+
+func geminiParameters(parameters any) any {
+	root, ok := parameters.(map[string]any)
+	if !ok {
+		return parameters
+	}
+	defs, _ := root["$defs"].(map[string]any)
+	return geminiSchema(root, defs, 0)
+}
+
+func geminiSchema(node any, defs map[string]any, depth int) any {
+	switch value := node.(type) {
+	case []any:
+		out := make([]any, len(value))
+		for i, item := range value {
+			out[i] = geminiSchema(item, defs, depth)
+		}
+		return out
+
+	case map[string]any:
+		if ref, ok := value["$ref"].(string); ok {
+			target := geminiResolveRef(ref, defs)
+			if target == nil || depth >= geminiMaxRefDepth {
+				return value
+			}
+			resolved, ok := geminiSchema(target, defs, depth+1).(map[string]any)
+			if !ok {
+				return value
+			}
+			for key, sibling := range value {
+				if key != "$ref" && geminiSchemaFields[key] {
+					resolved[key] = sibling
+				}
+			}
+			return resolved
+		}
+
+		out := make(map[string]any, len(value))
+		for key, field := range value {
+			if !geminiSchemaFields[key] {
+				continue
+			}
+			switch key {
+			case "properties":
+				properties, ok := field.(map[string]any)
+				if !ok {
+					out[key] = field
+					continue
+				}
+				sanitized := make(map[string]any, len(properties))
+				for name, property := range properties {
+					sanitized[name] = geminiSchema(property, defs, depth)
+				}
+				out[key] = sanitized
+			case "items", "anyOf":
+				out[key] = geminiSchema(field, defs, depth)
+			default:
+				out[key] = field
+			}
+		}
+		return out
+
+	default:
+		return node
+	}
+}
+
+func geminiResolveRef(ref string, defs map[string]any) map[string]any {
+	const prefix = "#/$defs/"
+	if defs == nil || !strings.HasPrefix(ref, prefix) {
+		return nil
+	}
+	target, _ := defs[strings.TrimPrefix(ref, prefix)].(map[string]any)
+	return target
 }
 
 func geminiToolConfig(choice *contracts.ToolChoice) map[string]any {
@@ -303,4 +411,20 @@ func geminiToolConfig(choice *contracts.ToolChoice) map[string]any {
 		config["mode"] = "AUTO"
 	}
 	return map[string]any{"functionCallingConfig": config}
+}
+
+func geminiProviderMeta(signature string) any {
+	if signature == "" {
+		return nil
+	}
+	return map[string]any{"thoughtSignature": signature}
+}
+
+func geminiThoughtSignature(meta any) string {
+	fields, ok := meta.(map[string]any)
+	if !ok {
+		return ""
+	}
+	signature, _ := fields["thoughtSignature"].(string)
+	return signature
 }

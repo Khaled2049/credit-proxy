@@ -1,6 +1,6 @@
 # Repository Guidelines — creditProxy
 
-creditProxy is NovelSync's credit-metered LLM gateway. It owns credit
+creditProxy is TheTaleTribe's credit-metered LLM gateway. It owns credit
 reservation, commit/release, BYOK routing, rate limits, and its audit ledger.
 
 ## Commands
