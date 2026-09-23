@@ -64,8 +64,12 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeChatError(w, http.StatusBadRequest, "invalid_max_output_tokens", "")
 		return
 	}
-	promptText := chatPromptText(req.Messages)
-	if len(promptText) > s.maxPromptChars {
+	input, err := chatInput(req)
+	if err != nil {
+		writeChatError(w, http.StatusBadRequest, "invalid_request", "")
+		return
+	}
+	if len(input) > s.maxChatInput {
 		writeChatError(w, http.StatusBadRequest, "prompt_too_large", "")
 		return
 	}
@@ -106,7 +110,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	promptTokens, estimatedTokens := tokens.EstimatePromptAndMaxCompletion(promptText, req.MaxOutputTokens)
+	promptTokens, estimatedTokens := tokens.Ceiling(len(input), req.MaxOutputTokens)
 	estimatedCredits := tokens.ToCredits(estimatedTokens, s.tokensPerCredit)
 	reservationID := ""
 
@@ -366,16 +370,12 @@ func (s *server) commitChat(ctx context.Context, p settleParams, credits int64, 
 	})
 }
 
-func chatPromptText(messages []contracts.ChatMessage) string {
-	var b strings.Builder
-	for _, message := range messages {
-		for _, part := range message.Parts {
-			if part.Type == contracts.PartText {
-				b.WriteString(part.Text)
-			}
-		}
-	}
-	return b.String()
+func chatInput(req contracts.ChatRequest) ([]byte, error) {
+	return json.Marshal(struct {
+		Messages   []contracts.ChatMessage `json:"messages"`
+		Tools      []contracts.ToolSchema  `json:"tools,omitempty"`
+		ToolChoice *contracts.ToolChoice   `json:"tool_choice,omitempty"`
+	}{req.Messages, req.Tools, req.ToolChoice})
 }
 
 func writeChatError(w http.ResponseWriter, status int, code, ref string) {

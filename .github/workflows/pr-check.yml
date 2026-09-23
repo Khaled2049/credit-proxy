@@ -22,8 +22,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # go-version-file, not a literal: go.mod already declares the toolchain
-      # (1.25.0), and a hardcoded 1.22 here failed to build it at all.
+      # go-version-file, not a literal: go.mod already declares the toolchain,
+      # and a hardcoded 1.22 here failed to build it at all.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

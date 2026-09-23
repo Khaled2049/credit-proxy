@@ -58,21 +58,21 @@ local status = redis.call("HGET", KEYS[2], "status")
 if not status then return {-3, "missing"} end
 if status == "committed" then return {1, "already_committed"} end
 if status == "released" then return {-4, "already_released"} end
-local reserved = tonumber(redis.call("HGET", KEYS[2], "amount"))
 local platform_day = redis.call("HGET", KEYS[2], "platform_day") or ""
+if platform_day ~= ARGV[3] then return {-5, "platform_day_mismatch"} end
+local reserved = tonumber(redis.call("HGET", KEYS[2], "amount"))
 local actual = tonumber(ARGV[2])
 if actual > reserved then
-  local extra = actual - reserved
-  local bal = tonumber(redis.call("GET", KEYS[1]) or "0")
-  if bal < extra then return {-2, "insufficient_for_reconcile"} end
-  redis.call("DECRBY", KEYS[1], extra)
+  redis.call("DECRBY", KEYS[1], actual - reserved)
 elseif reserved > actual then
-  local refund = reserved - actual
-  redis.call("INCRBY", KEYS[1], refund)
+  redis.call("INCRBY", KEYS[1], reserved - actual)
 end
-redis.call("HSET", KEYS[2], "status", "committed", "amount", actual)
+if platform_day ~= "" and actual ~= reserved then
+  redis.call("INCRBY", KEYS[3], actual - reserved)
+end
+redis.call("HSET", KEYS[2], "status", "committed", "amount", actual, "reserved", reserved)
 redis.call("EXPIRE", KEYS[2], 86400)
-return {1, "committed", tostring(reserved), platform_day}
+return {1, "committed", tostring(reserved), tostring(actual - reserved)}
 `
 
 const releaseScript = `
@@ -80,12 +80,16 @@ local status = redis.call("HGET", KEYS[2], "status")
 if not status then return {-3, "missing"} end
 if status == "released" then return {1, "already_released"} end
 if status == "committed" then return {-4, "already_committed"} end
-local reserved = tonumber(redis.call("HGET", KEYS[2], "amount"))
 local platform_day = redis.call("HGET", KEYS[2], "platform_day") or ""
+if platform_day ~= ARGV[2] then return {-5, "platform_day_mismatch"} end
+local reserved = tonumber(redis.call("HGET", KEYS[2], "amount"))
 redis.call("INCRBY", KEYS[1], reserved)
+if platform_day ~= "" then
+  redis.call("DECRBY", KEYS[3], reserved)
+end
 redis.call("HSET", KEYS[2], "status", "released")
 redis.call("EXPIRE", KEYS[2], 86400)
-return {1, "released", tostring(reserved), platform_day}
+return {1, "released", tostring(reserved)}
 `
 
 type server struct {
@@ -342,8 +346,13 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request, userID, re
 		http.Error(w, "actual_credits cannot be negative", http.StatusBadRequest)
 		return
 	}
-	keys := []string{userCreditsKey(userID), reservationKey(resID)}
-	args := []any{userID, req.ActualCredits}
+	day, err := s.reservationDay(r.Context(), resID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	keys := []string{userCreditsKey(userID), reservationKey(resID), platformCreditsKey(day)}
+	args := []any{userID, req.ActualCredits, day}
 	out, err := s.rdb.Eval(r.Context(), commitScript, keys, args...).Result()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -355,17 +364,14 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request, userID, re
 		return
 	}
 	code, _ := strconv.Atoi(res[0])
-	if code == -2 {
-		http.Error(w, "insufficient credits for reconciliation", http.StatusPaymentRequired)
-		return
-	}
 	if code < 0 {
 		http.Error(w, "reservation not valid for commit", http.StatusConflict)
 		return
 	}
-	if len(res) >= 4 && res[3] != "" {
-		reserved, _ := strconv.ParseInt(res[2], 10, 64)
-		s.adjustPlatformCredits(r.Context(), res[3], req.ActualCredits-reserved)
+	if len(res) >= 4 {
+		if overage, _ := strconv.ParseInt(res[3], 10, 64); overage > 0 {
+			log.Printf("reservation overage res=%s user=%s reserved=%s overage=%d", resID, userID, res[2], overage)
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"reservation_id": resID, "status": "committed", "actual_credits": req.ActualCredits})
 }
@@ -373,8 +379,13 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request, userID, re
 func (s *server) handleRelease(w http.ResponseWriter, r *http.Request, userID, resID string) {
 	var req contracts.ReleaseReservationRequest
 	_ = httpx.ReadJSON(r, &req)
-	keys := []string{userCreditsKey(userID), reservationKey(resID)}
-	args := []any{userID}
+	day, err := s.reservationDay(r.Context(), resID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	keys := []string{userCreditsKey(userID), reservationKey(resID), platformCreditsKey(day)}
+	args := []any{userID, day}
 	out, err := s.rdb.Eval(r.Context(), releaseScript, keys, args...).Result()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -389,10 +400,6 @@ func (s *server) handleRelease(w http.ResponseWriter, r *http.Request, userID, r
 	if code < 0 {
 		http.Error(w, "reservation not valid for release", http.StatusConflict)
 		return
-	}
-	if len(res) >= 4 && res[3] != "" {
-		reserved, _ := strconv.ParseInt(res[2], 10, 64)
-		s.adjustPlatformCredits(r.Context(), res[3], -reserved)
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"reservation_id": resID, "status": "released", "reason": req.Reason})
 }
@@ -446,11 +453,6 @@ func (s *server) ensureInitialCredits(ctx context.Context, userID string) error 
 	return s.rdb.SetNX(ctx, userCreditsKey(userID), s.initialCredits, 0).Err()
 }
 
-// adjustPlatformCredits reconciles the daily budget after a reservation settles.
-// Best effort: a failed adjustment leaves the budget conservatively high, which
-// throttles the platform rather than overspending it. The reservation records
-// its UTC day so a settlement after midnight cannot subtract from the next
-// day's allowance.
 func (s *server) adjustPlatformCredits(ctx context.Context, day string, delta int64) {
 	if delta == 0 {
 		return
@@ -458,6 +460,14 @@ func (s *server) adjustPlatformCredits(ctx context.Context, day string, delta in
 	if err := s.rdb.IncrBy(ctx, platformCreditsKey(day), delta).Err(); err != nil {
 		log.Printf("platform budget adjust failed day=%s delta=%d: %v", day, delta, err)
 	}
+}
+
+func (s *server) reservationDay(ctx context.Context, resID string) (string, error) {
+	day, err := s.rdb.HGet(ctx, reservationKey(resID), "platform_day").Result()
+	if errors.Is(err, redis.Nil) {
+		return "", nil
+	}
+	return day, err
 }
 
 func platformCreditsKey(day string) string {

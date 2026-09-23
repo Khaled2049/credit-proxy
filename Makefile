@@ -49,7 +49,7 @@ test:
 	go test ./...
 
 run-gateway:
-	go run -ldflags "$(LDFLAGS)" ./cmd/gateway
+	AUTH_MODE=$${AUTH_MODE:-dev} go run -ldflags "$(LDFLAGS)" ./cmd/gateway
 
 run-usage:
 	go run -ldflags "$(LDFLAGS)" ./cmd/usage

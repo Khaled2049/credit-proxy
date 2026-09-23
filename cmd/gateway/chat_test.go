@@ -134,6 +134,7 @@ func newChatServer(url string) *server {
 		verifier:                 authn.NewVerifier(authn.Config{Mode: authn.ModeDev}),
 		maxOutputTokens:          8192,
 		maxPromptChars:           64000,
+		maxChatInput:             262144,
 		tokensPerCredit:          100,
 		rateLimiter:              newUserRateLimiter(10),
 		chatRateLimiter:          newUserRateLimiter(60),
@@ -391,5 +392,76 @@ func TestChatBufferedCommitsRealUsage(t *testing.T) {
 	}
 	if _, committed, commits, releases := stub.snapshot(); commits != 1 || releases != 0 || committed != 5 {
 		t.Errorf("commits = %d, releases = %d, committed = %d; want 1, 0, 5", commits, releases, committed)
+	}
+}
+
+func toolHeavyChatRequest(t *testing.T, schemaBytes int) (string, contracts.ChatRequest) {
+	t.Helper()
+	req := contracts.ChatRequest{
+		Version: contracts.ChatContractVersion,
+		UserID:  "user123",
+		Messages: []contracts.ChatMessage{
+			{Role: contracts.RoleUser, Parts: []contracts.ChatPart{{Type: contracts.PartText, Text: "hi"}}},
+			{Role: contracts.RoleAssistant, Parts: []contracts.ChatPart{{
+				Type: contracts.PartToolCall, ToolCallID: "call_1", Name: "search_story",
+				Arguments: map[string]any{"query": strings.Repeat("q", 4000)},
+			}}},
+			{Role: contracts.RoleTool, ToolCallID: "call_1", Parts: []contracts.ChatPart{{Type: contracts.PartText, Text: "ok"}}},
+		},
+		Tools: []contracts.ToolSchema{{
+			Name:        "search_story",
+			Description: strings.Repeat("d", schemaBytes),
+			Parameters:  map[string]any{"type": "object"},
+		}},
+		MaxOutputTokens: 1000,
+		Stream:          true,
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body), req
+}
+
+func TestChatReservationCoversToolsAndToolCallArguments(t *testing.T) {
+	stub := &chatStub{llmEvents: []string{textDeltaEvent, usageEvent, doneEvent}}
+	srv := newChatStub(stub)
+	defer srv.Close()
+	s := newChatServer(srv.URL)
+
+	body, req := toolHeavyChatRequest(t, 20000)
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(body)))
+
+	input, err := chatInput(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input) < 24000 {
+		t.Fatalf("serialized input = %d bytes, expected tool schema and arguments to be included", len(input))
+	}
+	want := (int64(len(input)) + 32 + 1000 + 99) / 100
+	reserved, _, _, _ := stub.snapshot()
+	if reserved != want {
+		t.Fatalf("reserved = %d credits, want %d", reserved, want)
+	}
+}
+
+func TestChatRejectsOversizedSerializedInput(t *testing.T) {
+	stub := &chatStub{}
+	srv := newChatStub(stub)
+	defer srv.Close()
+	s := newChatServer(srv.URL)
+	s.maxChatInput = 10000
+
+	body, _ := toolHeavyChatRequest(t, 20000)
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(body)))
+
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "prompt_too_large") {
+		t.Fatalf("status = %d body = %s, want 400 prompt_too_large", rr.Code, rr.Body.String())
+	}
+	if reserved, _, _, _ := stub.snapshot(); reserved != 0 {
+		t.Fatalf("reserved = %d, want no reservation", reserved)
 	}
 }

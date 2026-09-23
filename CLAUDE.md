@@ -103,7 +103,7 @@ into one `ChatResponse`, so there is one aggregation implementation.
 - `platform:daily:<YYYY-MM-DD>` — integer counter of non-BYOK requests today (auto-expires after 25 h)
 - `platform:credits:<YYYY-MM-DD>` — credits held platform-wide today (auto-expires after 25 h)
 
-All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `commitScript`, `releaseScript`) for atomicity. Commit script reconciles estimated vs. actual spend by adjusting balance inline. A fourth script (`platformDailyScript`) atomically increments the daily counter and rejects the request if it has reached `PLATFORM_DAILY_REQUEST_LIMIT` — this check runs before any per-user credit reservation and is skipped entirely for BYOK requests.
+All mutations (reserve/commit/release) run as Lua scripts (`reserveScript`, `commitScript`, `releaseScript`) for atomicity. Commit script reconciles estimated vs. actual spend by adjusting balance inline and never fails for lack of funds: usage above the hold is charged even if it takes the balance negative, so the platform never absorbs a cost it already incurred, and a user in debt is refused at the next reservation until they top up. Commit and release also reconcile `platform:credits:<day>` inside the same script, so the platform budget and the user balance cannot drift apart. A fourth script (`platformDailyScript`) atomically increments the daily counter and rejects the request if it has reached `PLATFORM_DAILY_REQUEST_LIMIT` — this check runs before any per-user credit reservation and is skipped entirely for BYOK requests.
 
 A fifth script (`platformCreditsScript`) does the same for *credits*: the
 request cap bounds how many calls are made, this bounds how large they are,
@@ -130,7 +130,7 @@ Server-wide provider is selected via `LLM_PROVIDER`/`PLATFORM_MODEL`; per-reques
 BYOK overrides it. Requires `INTERNAL_SERVICE_TOKEN` when configured. Catalog and
 credential checks use `/v1/providers` and `/v1/providers/validate`.
 
-**Token estimation (`pkg/tokens`):** Prompt tokens estimated at ~1.3 tokens/word. Completion estimate is `min(maxCompletion, max(256, promptTokens))` — scales with prompt size rather than always reserving worst-case max. The commit step reconciles against actual token usage.
+**Token ceiling (`pkg/tokens`):** Reservations hold `tokens.Ceiling` — the UTF-8 byte length of everything the provider will see, plus a fixed 32-token overhead, plus `max_output_tokens`. A token never covers less than one byte, so this is an upper bound for any input, including long strings without spaces or digit runs that a word count would undercount. For `/v1/chat` the input is the serialized `messages`, `tools` and `tool_choice`, so tool schemas and tool-call arguments are reserved for too, and the same bytes are checked against `MAX_CHAT_INPUT_BYTES`. The ceiling over-reserves ordinary prose by roughly 4×; commit refunds the difference. `tokens.Estimate` (~1.3 tokens/word) survives only as llmproxy's fallback when a provider reports no usage.
 
 **`pkg/` layout:**
 - `auth/` — `Verifier` struct: OIDC caller verification + Firebase ID token verification. Three modes: `dev` (no checks), `dev_strict` (Firebase only), `production` (OIDC + Firebase). Used by gateway to resolve `billingUserID`.
@@ -166,13 +166,14 @@ credential checks use `/v1/providers` and `/v1/providers/validate`.
 | `USAGE_SERVICE_URL` | `http://usage:8081` | Gateway config |
 | `LLM_PROXY_URL` | `http://llmproxy:8082` | Gateway config |
 | `LEDGER_SERVICE_URL` | `http://ledger:8083` | Gateway config |
-| `AUTH_MODE` | `dev` | `dev` skips all auth; `dev_strict` requires Firebase token; `production` requires OIDC + Firebase |
+| `AUTH_MODE` | `dev` (Compose, `make run-gateway`) | **Required** — the gateway refuses to start if it is unset or unrecognized. `dev` skips all auth and is only for loopback; `dev_strict` requires a Firebase token and `FIREBASE_PROJECT_ID`; `production` requires OIDC + Firebase, `FIREBASE_PROJECT_ID` and `GCP_ALLOWED_CALLER_SA` |
 | `FIREBASE_PROJECT_ID` | `""` | Required in `dev_strict` / `production` for Firebase token verification |
 | `GCP_AUDIENCE` | `""` | OIDC token audience (production); derived from request Host if unset |
-| `GCP_ALLOWED_CALLER_SA` | `""` | Comma-separated allowed caller emails or subject IDs; empty = any valid token |
+| `GCP_ALLOWED_CALLER_SA` | `""` | Comma-separated allowed caller emails or subject IDs; required in `production` (startup fails if empty) |
 | `INTERNAL_SERVICE_TOKEN` | `""` | Shared secret gateway sends to llmproxy via `X-Internal-Token`; empty = no enforcement |
 | `MAX_OUTPUT_TOKENS` | `8192` | Gateway hard cap on `max_output_tokens` per request |
-| `MAX_PROMPT_CHARS` | `64000` | Gateway hard cap on prompt length in characters |
+| `MAX_PROMPT_CHARS` | `64000` | Gateway hard cap on `/v1/generate` prompt length in bytes |
+| `MAX_CHAT_INPUT_BYTES` | `262144` | Gateway hard cap on `/v1/chat` serialized input (messages, tools, tool choice) |
 | `MAX_REQUESTS_PER_MINUTE_PER_USER` | `10` | Per-user token-bucket rate limit at the gateway |
 
 BYOK fields (`byok_provider`, `byok_api_key`, `byok_model`) in the request body override all env-var provider config for that request only.

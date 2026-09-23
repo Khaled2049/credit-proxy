@@ -29,6 +29,7 @@ type server struct {
 	verifier        *authn.Verifier
 	maxOutputTokens int64
 	maxPromptChars  int
+	maxChatInput    int
 	tokensPerCredit int64
 	rateLimiter     *userRateLimiter
 	internalToken   string
@@ -41,19 +42,31 @@ type server struct {
 
 func main() {
 	addr := getenv("GATEWAY_ADDR", ":8080")
+	authMode, err := authn.ParseMode(os.Getenv("AUTH_MODE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	authConfig := authn.Config{
+		Mode:                    authMode,
+		GCPAudience:             getenv("GCP_AUDIENCE", ""),
+		AllowedCallerIdentities: splitCSV(getenv("GCP_ALLOWED_CALLER_SA", "")),
+		FirebaseProjectID:       getenv("FIREBASE_PROJECT_ID", ""),
+	}
+	if err := authConfig.Validate(); err != nil {
+		log.Fatal(err)
+	}
+	if authMode == authn.ModeDev {
+		log.Printf("WARNING: AUTH_MODE=dev accepts any caller and trusts the user_id in the request body; never expose this gateway beyond localhost")
+	}
 	s := &server{
-		usageURL:  strings.TrimRight(getenv("USAGE_SERVICE_URL", "http://usage:8081"), "/"),
-		llmURL:    strings.TrimRight(getenv("LLM_PROXY_URL", "http://llmproxy:8082"), "/"),
-		ledgerURL: strings.TrimRight(getenv("LEDGER_SERVICE_URL", "http://ledger:8083"), "/"),
-		client:    httpx.NewHTTPClient(30 * time.Second),
-		verifier: authn.NewVerifier(authn.Config{
-			Mode:                    authn.ParseMode(getenv("AUTH_MODE", "dev")),
-			GCPAudience:             getenv("GCP_AUDIENCE", ""),
-			AllowedCallerIdentities: splitCSV(getenv("GCP_ALLOWED_CALLER_SA", "")),
-			FirebaseProjectID:       getenv("FIREBASE_PROJECT_ID", ""),
-		}),
+		usageURL:        strings.TrimRight(getenv("USAGE_SERVICE_URL", "http://usage:8081"), "/"),
+		llmURL:          strings.TrimRight(getenv("LLM_PROXY_URL", "http://llmproxy:8082"), "/"),
+		ledgerURL:       strings.TrimRight(getenv("LEDGER_SERVICE_URL", "http://ledger:8083"), "/"),
+		client:          httpx.NewHTTPClient(30 * time.Second),
+		verifier:        authn.NewVerifier(authConfig),
 		maxOutputTokens: getenvInt64("MAX_OUTPUT_TOKENS", 8192),
 		maxPromptChars:  int(getenvInt64("MAX_PROMPT_CHARS", 64000)),
+		maxChatInput:    int(getenvInt64("MAX_CHAT_INPUT_BYTES", 262144)),
 		tokensPerCredit: getenvInt64("TOKENS_PER_CREDIT", 100),
 		rateLimiter:     newUserRateLimiter(int(getenvInt64("MAX_REQUESTS_PER_MINUTE_PER_USER", 10))),
 		internalToken:   strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_TOKEN")),
@@ -173,10 +186,12 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
 
-	// Authorization hold: reserve the true token ceiling (prompt + maxOutput),
-	// converted to credits via TOKENS_PER_CREDIT. Commit reconciles down to the
-	// provider's real usage below.
-	promptToks, estimatedTokens := tokens.EstimatePromptAndMaxCompletion(req.Prompt, req.MaxOutputTokens)
+	if !isBYOK && !req.ForceMock && !s.platformInferenceEnabled {
+		http.Error(w, "platform inference is disabled (ref "+reqID+")", http.StatusServiceUnavailable)
+		return
+	}
+
+	promptToks, estimatedTokens := tokens.Ceiling(len(req.Prompt), req.MaxOutputTokens)
 	estimatedCredits := tokens.ToCredits(estimatedTokens, s.tokensPerCredit)
 	reservationID := ""
 
