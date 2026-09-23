@@ -42,7 +42,10 @@ make smoke
 
 ## Architecture
 
-Four Go microservices, each in `cmd/<name>/main.go` (single-file per service). Shared types in `pkg/contracts/contracts.go`. No frameworks — stdlib `net/http` throughout.
+Three Go services own gateway, billing, and ledger behavior. The private provider
+adapter is Python/FastAPI under `services/litellm_adapter` and uses LiteLLM.
+Shared wire types remain in `pkg/contracts`. `cmd/llmproxy` is retained only as
+rollback/reference code and is not built by Compose or the deploy workflow.
 
 **Request flow for `POST /v1/generate` (gateway):**
 
@@ -83,7 +86,7 @@ into one `ChatResponse`, so there is one aggregation implementation.
 
 *BYOK path (`byok_provider` + `byok_api_key` present):*
 1. Skip credit reservation entirely
-2. Call llmproxy with BYOK fields; llmproxy instantiates the provider from the request
+2. Call llmproxy with BYOK fields; LiteLLM uses the credential only for that request
 3. Emit `byok_generate` ledger event (audit only — no credit impact)
 
 **Service ports:**
@@ -91,7 +94,7 @@ into one `ChatResponse`, so there is one aggregation implementation.
 |---------|------|---------------|
 | gateway | 8080 | — |
 | usage   | 8081 | Redis 7 |
-| llmproxy| 8082 | Gemini API |
+| llmproxy| 8082 | LiteLLM / provider APIs |
 | ledger  | 8083 | Postgres 16 |
 
 **Usage service (Redis):** Credit state lives in three Redis key types:
@@ -112,31 +115,20 @@ already permits or it quietly becomes the real limit on `/v1/generate` too.
 
 **Ledger service (Postgres):** Append-only `ledger_events` table. Idempotency enforced via `ON CONFLICT (idempotency_key) DO UPDATE` (upsert is a no-op). Schema auto-applied at startup — no migration runner needed.
 
-**Chat providers (`ChatProvider`):** `/v1/chat` needs streaming and tool calls,
-which `Provider.Generate` cannot express, so backends opt in through a second
-interface instead of widening the first. A provider that does not implement it
-returns 501 — mock, Ollama and Gemini do; OpenAI and Anthropic do not yet. The
-mock is scripted from the
-contract fixtures in `pkg/contracts/testdata/chat/` (embedded via
-`pkg/contracts/fixtures.go`): `__script: <fixture>` in the last user message
-replays one, `__delay: <ms>` paces the frames, `__script: hang` blocks until the
-caller disconnects.
-
-**Ollama** streams newline-delimited JSON from `/api/chat` and sends a tool call
-as one complete object; **Gemini** streams SSE from `streamGenerateContent` and
-has no tool-call id at all, so one is minted per call and the function *name* is
-recovered from the assistant turn when building `functionResponse`. Both
-normalize into the same `ChatEvent` stream, so nothing downstream branches on
-the provider. A model that ignores `tool_choice: required` fails with
-`unsupported_model` rather than returning prose the orchestrator would try to
-parse as a tool result.
+**Chat providers:** LiteLLM translates Gemini, OpenAI, and Anthropic into the
+same normalized streaming/tool-call contract. The mock still replays fixtures
+from `pkg/contracts/testdata/chat/`: `__script: <fixture>` selects one,
+`__delay: <ms>` paces frames, and `__script: hang` waits for cancellation.
 
 llmproxy does not open its SSE response until the first event, so a provider
 that fails before producing anything still returns a real HTTP status. That is
 what lets the gateway tell "nothing was billable" from "the stream died
 partway".
 
-**LLM proxy:** Supports Gemini, OpenAI, Anthropic, Ollama, and mock. Server-wide provider is selected at startup via env vars (`LLM_PROVIDER`, `LLM_MOCK_MODE`, `GEMINI_API_KEY`, etc.). Per-request **BYOK** overrides the server-wide provider: if `byok_provider` + `byok_api_key` are set in the request, `newProviderFromBYOK()` instantiates a fresh provider for that request only. Requires `INTERNAL_SERVICE_TOKEN` header from gateway when the token is configured.
+**LLM proxy:** Supports a curated Gemini, OpenAI, and Anthropic catalog plus mock.
+Server-wide provider is selected via `LLM_PROVIDER`/`PLATFORM_MODEL`; per-request
+BYOK overrides it. Requires `INTERNAL_SERVICE_TOKEN` when configured. Catalog and
+credential checks use `/v1/providers` and `/v1/providers/validate`.
 
 **Token estimation (`pkg/tokens`):** Prompt tokens estimated at ~1.3 tokens/word. Completion estimate is `min(maxCompletion, max(256, promptTokens))` — scales with prompt size rather than always reserving worst-case max. The commit step reconciles against actual token usage.
 
@@ -153,28 +145,24 @@ partway".
 |----------|-----------------|-------|
 | `GATEWAY_ADDR` | `:8080` | |
 | `USAGE_ADDR` | `:8081` | |
-| `LLMPROXY_ADDR` | `:8082` | |
+| `PORT` | `8082` | LiteLLM adapter listen port in Docker |
 | `LEDGER_ADDR` | `:8083` | |
 | `REDIS_URL` | `redis://redis:6379` | |
 | `POSTGRES_DSN` | `postgres://postgres:postgres@postgres:5432/creditproxy?sslmode=disable` | |
-| `LLM_PROVIDER` | `mock` | Provider: `gemini`, `openai`, `anthropic`, `ollama`, `mock`. Set in `.env`, wired to llmproxy via docker-compose. |
-| `LLM_MOCK_MODE` | `true` | Legacy fallback: if `LLM_PROVIDER` unset and this is `true`, use mock |
+| `LLM_PROVIDER` | `mock` | Provider: `gemini`, `openai`, `anthropic`, `mock`. |
+| `PLATFORM_MODEL` | `""` | Optional `provider/model` platform default. |
 | `INITIAL_CREDITS` | `10000` | Free tokens granted to new users on their first reservation (atomic `SetNX`) |
 | `PLATFORM_DAILY_REQUEST_LIMIT` | `1400` | Hard ceiling on non-BYOK platform requests per UTC day. Keeps total usage under the LLM provider's free-tier RPD. BYOK requests are never counted. |
 | `PLATFORM_DAILY_CREDIT_LIMIT` | `150000` | Hard ceiling on non-BYOK credits held per UTC day. Sized above what the request cap already allows so it is a backstop, not the binding limit. |
 | `PLATFORM_INFERENCE_ENABLED` | `true` | Kill switch. `false` refuses platform-funded inference at the gateway; BYOK and `force_mock` keep working. |
 | `MAX_CHAT_REQUESTS_PER_MINUTE_PER_USER` | `60` | Per-user rate bucket for `/v1/chat`, separate from generate's. |
-| `LOCAL_UNMETERED` | `false` | Skip credit metering because inference runs on local hardware; audited as `local_generate`. llmproxy refuses to start unless the provider is Ollama on a local address. Read by gateway **and** llmproxy; not exposed in Terraform. |
+| `LOCAL_UNMETERED` | `false` | Must remain false with the hosted LiteLLM adapter; startup fails closed if enabled. |
 | `GEMINI_API_KEY` | `""` | Required when `LLM_PROVIDER=gemini` |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | |
 | `OPENAI_API_KEY` | `""` | Required when `LLM_PROVIDER=openai` |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Override for compatible APIs |
 | `ANTHROPIC_API_KEY` | `""` | Required when `LLM_PROVIDER=anthropic` |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | |
-| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1` | |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | |
-| `OLLAMA_MODEL` | `llama3` | |
 | `USAGE_SERVICE_URL` | `http://usage:8081` | Gateway config |
 | `LLM_PROXY_URL` | `http://llmproxy:8082` | Gateway config |
 | `LEDGER_SERVICE_URL` | `http://ledger:8083` | Gateway config |

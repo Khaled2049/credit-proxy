@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "gemini",
+      "label": "Gemini",
+      "description": "Google's multimodal models",
+      "default_model": "gemini-2.5-flash",
+      "models": [
+        {
+          "id": "gemini-2.5-flash-lite",
+          "label": "Gemini 2.5 Flash Lite",
+          "description": "Lowest latency and cost for lightweight writing tasks.",
+          "tier": "economy",
+          "capabilities": ["text", "tools", "streaming"]
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "label": "Gemini 2.5 Flash",
+          "tier": "fast",
+          "capabilities": ["chat", "streaming", "tools", "structured-output"]
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "label": "Gemini 2.5 Pro",
+          "tier": "quality",
+          "capabilities": ["chat", "streaming", "tools", "structured-output"]
+        }
+      ]
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic",
+      "description": "Claude models for nuanced, literary work",
+      "default_model": "claude-haiku-4-5-20251001",
+      "models": [
+        {
+          "id": "claude-haiku-4-5-20251001",
+          "label": "Claude Haiku",
+          "tier": "fast",
+          "capabilities": ["chat", "streaming", "tools"]
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "label": "Claude Sonnet",
+          "tier": "balanced",
+          "capabilities": ["chat", "streaming", "tools"]
+        },
+        {
+          "id": "claude-opus-4-7",
+          "label": "Claude Opus",
+          "tier": "quality",
+          "capabilities": ["chat", "streaming", "tools"]
+        }
+      ]
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "description": "GPT and reasoning models",
+      "default_model": "gpt-4o-mini",
+      "models": [
+        {
+          "id": "gpt-4o-mini",
+          "label": "GPT-4o Mini",
+          "tier": "fast",
+          "capabilities": ["chat", "streaming", "tools", "structured-output"]
+        },
+        {
+          "id": "gpt-4o",
+          "label": "GPT-4o",
+          "tier": "quality",
+          "capabilities": ["chat", "streaming", "tools", "structured-output"]
+        },
+        {
+          "id": "o3-mini",
+          "label": "o3-mini",
+          "tier": "reasoning",
+          "capabilities": ["chat", "streaming", "tools", "reasoning"]
+        }
+      ]
+    }
+  ]
+}

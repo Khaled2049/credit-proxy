@@ -14,6 +14,7 @@ servers:
     description: Local / Docker
 tags:
   - name: generation
+  - name: providers
   - name: credits
   - name: system
 paths:
@@ -29,6 +30,59 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+  /v1/providers:
+    get:
+      tags: [providers]
+      summary: Get the curated provider/model catalog
+      operationId: getProviders
+      responses:
+        "200":
+          description: Credential-free provider catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, providers]
+                properties:
+                  version: { type: integer }
+                  providers:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+        "502": { description: Provider adapter unavailable }
+  /v1/providers/validate:
+    post:
+      tags: [providers]
+      summary: Validate a BYOK key and selected model
+      operationId: validateProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, provider, api_key]
+              properties:
+                user_id: { type: string }
+                provider: { type: string, enum: [gemini, anthropic, claude, openai] }
+                api_key: { type: string, writeOnly: true }
+                model: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Validation result (invalid credentials also return 200 with valid=false)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid: { type: boolean }
+                  provider: { type: string }
+                  model: { type: string }
+                  error: { type: string }
+        "400": { description: Malformed request }
+        "401": { description: Authentication failed }
+        "429": { description: Validation rate limit reached }
+        "502": { description: Provider adapter unavailable }
   /v1/generate:
     post:
       tags: [generation]

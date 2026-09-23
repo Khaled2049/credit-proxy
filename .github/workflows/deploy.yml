@@ -62,7 +62,7 @@ jobs:
       - name: Build and push Docker images
         run: |
           REGISTRY="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}"
-          for SERVICE in gateway usage llmproxy ledger; do
+          for SERVICE in gateway usage ledger; do
             echo "Building $SERVICE..."
             docker build \
               --build-arg SERVICE=${SERVICE} \
@@ -72,6 +72,12 @@ jobs:
               .
             docker push ${REGISTRY}/${SERVICE}:${{ github.sha }}
           done
+          echo "Building Python LiteLLM adapter..."
+          docker build \
+            -f services/litellm_adapter/Dockerfile \
+            -t ${REGISTRY}/llmproxy:${{ github.sha }} \
+            .
+          docker push ${REGISTRY}/llmproxy:${{ github.sha }}
 
       - name: Ensure Terraform state bucket exists
         run: |
