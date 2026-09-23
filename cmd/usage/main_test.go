@@ -367,3 +367,98 @@ func TestPlatformCreditBudget_ReconcilesReservationDay(t *testing.T) {
 		t.Fatalf("current-day budget = %s, want 100", got)
 	}
 }
+
+func reserveFor(t *testing.T, s *server, userID string, credits int64) string {
+	t.Helper()
+	w := postReservation(t, s, userID, credits)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reserve: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var reservation contracts.ReservationResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &reservation); err != nil {
+		t.Fatal(err)
+	}
+	return reservation.ReservationID
+}
+
+func commitFor(t *testing.T, s *server, userID, resID string, actual int64) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(contracts.CommitReservationRequest{ActualCredits: actual})
+	req := httptest.NewRequest(http.MethodPost, "/v1/reservations/"+resID+"/commit?user_id="+userID, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleReservationAction(w, req)
+	return w
+}
+
+func TestCommit_OverageBeyondBalanceIsChargedAsDebt(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.initialCredits = 100
+	day := time.Now().UTC().Format("2006-01-02")
+
+	resID := reserveFor(t, s, "u1", 80)
+	if w := commitFor(t, s, "u1", resID, 150); w.Code != http.StatusOK {
+		t.Fatalf("commit: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got, _ := s.rdb.Get(t.Context(), userCreditsKey("u1")).Int64(); got != -50 {
+		t.Fatalf("balance = %d, want -50", got)
+	}
+	if got := s.rdb.Get(t.Context(), platformCreditsKey(day)).Val(); got != "150" {
+		t.Fatalf("platform credits = %s, want 150", got)
+	}
+	if w := postReservation(t, s, "u1", 1); w.Code != http.StatusPaymentRequired {
+		t.Fatalf("reserve while in debt: want 402, got %d", w.Code)
+	}
+	if w := commitFor(t, s, "u1", resID, 150); w.Code != http.StatusOK {
+		t.Fatalf("repeat commit: want 200, got %d", w.Code)
+	}
+	if got, _ := s.rdb.Get(t.Context(), userCreditsKey("u1")).Int64(); got != -50 {
+		t.Fatalf("balance after repeat commit = %d, want -50", got)
+	}
+}
+
+func TestCommit_RefundReconcilesPlatformBudget(t *testing.T) {
+	s, _ := newTestServer(t, 10)
+	s.initialCredits = 1000
+	day := time.Now().UTC().Format("2006-01-02")
+
+	resID := reserveFor(t, s, "u1", 300)
+	if w := commitFor(t, s, "u1", resID, 40); w.Code != http.StatusOK {
+		t.Fatalf("commit: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got, _ := s.rdb.Get(t.Context(), userCreditsKey("u1")).Int64(); got != 960 {
+		t.Fatalf("balance = %d, want 960", got)
+	}
+	if got := s.rdb.Get(t.Context(), platformCreditsKey(day)).Val(); got != "40" {
+		t.Fatalf("platform credits = %s, want 40", got)
+	}
+}
+
+func TestCommit_ConcurrentOveragesSettleExactly(t *testing.T) {
+	s, _ := newTestServer(t, 100)
+	s.initialCredits = 1000
+	day := time.Now().UTC().Format("2006-01-02")
+
+	const requests = 10
+	resIDs := make([]string, requests)
+	for i := range resIDs {
+		resIDs[i] = reserveFor(t, s, "u1", 100)
+	}
+	var wg sync.WaitGroup
+	for _, resID := range resIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if w := commitFor(t, s, "u1", resID, 130); w.Code != http.StatusOK {
+				t.Errorf("commit: want 200, got %d: %s", w.Code, w.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got, _ := s.rdb.Get(t.Context(), userCreditsKey("u1")).Int64(); got != -300 {
+		t.Fatalf("balance = %d, want -300", got)
+	}
+	if got := s.rdb.Get(t.Context(), platformCreditsKey(day)).Val(); got != "1300" {
+		t.Fatalf("platform credits = %s, want 1300", got)
+	}
+}

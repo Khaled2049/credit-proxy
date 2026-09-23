@@ -22,51 +22,36 @@ func TestEstimate(t *testing.T) {
 	}
 }
 
-func TestEstimatePromptAndMaxCompletion(t *testing.T) {
-	// The result is the TRUE ceiling: promptTokens + maxCompletion (the model
-	// cannot emit more than maxCompletion), guaranteeing solvency at reserve time.
+func TestCeiling(t *testing.T) {
 	tests := []struct {
 		name          string
-		prompt        string
+		input         string
 		maxCompletion int64
 		wantPrompt    int64
 		wantTotal     int64
 	}{
-		{
-			name:   "small max adds full max to prompt",
-			prompt: "hello world", maxCompletion: 32,
-			wantPrompt: 2, wantTotal: 34, // 2 + 32
-		},
-		{
-			name:          "large max is the ceiling",
-			prompt:        buildWords(360), // ~360 words → 468 tokens
-			maxCompletion: 8192,
-			wantPrompt:    468, wantTotal: 8660, // 468 + 8192
-		},
-		{
-			name:   "short prompt still reserves full max",
-			prompt: "write me a story", maxCompletion: 1024,
-			wantPrompt: 5, wantTotal: 1029, // 5 + 1024
-		},
-		{
-			name:          "long prompt plus max",
-			prompt:        buildWords(2308), // ~2308 words → 3000 tokens
-			maxCompletion: 8192,
-			wantPrompt:    3000, wantTotal: 11192, // 3000 + 8192
-		},
-		{
-			name:   "negative max treated as zero",
-			prompt: "hello", maxCompletion: -1,
-			wantPrompt: 1, wantTotal: 1, // 1 + 0
-		},
+		{name: "empty input reserves only the completion", input: "", maxCompletion: 100, wantPrompt: 0, wantTotal: 100},
+		{name: "short prose", input: "hello world", maxCompletion: 32, wantPrompt: 43, wantTotal: 75},
+		{name: "long input without spaces counts every byte", input: strings.Repeat("x", 60000), maxCompletion: 1000, wantPrompt: 60032, wantTotal: 61032},
+		{name: "digits count one token each", input: strings.Repeat("7", 5000), maxCompletion: 0, wantPrompt: 5032, wantTotal: 5032},
+		{name: "multibyte text counts bytes not runes", input: "日本語", maxCompletion: 0, wantPrompt: 41, wantTotal: 41},
+		{name: "negative max treated as zero", input: "hello", maxCompletion: -1, wantPrompt: 37, wantTotal: 37},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, tot := EstimatePromptAndMaxCompletion(tt.prompt, tt.maxCompletion)
+			p, tot := Ceiling(len(tt.input), tt.maxCompletion)
 			if p != tt.wantPrompt || tot != tt.wantTotal {
 				t.Fatalf("prompt=%d total=%d, want prompt=%d total=%d", p, tot, tt.wantPrompt, tt.wantTotal)
 			}
 		})
+	}
+}
+
+func TestCeilingBoundsWordHeuristic(t *testing.T) {
+	for _, input := range []string{"hello", buildWords(2308), strings.Repeat("a", 10000), "a b c d e f g"} {
+		if p, _ := Ceiling(len(input), 0); p < Estimate(input) {
+			t.Fatalf("ceiling %d below heuristic %d for %q", p, Estimate(input), input[:min(len(input), 20)])
+		}
 	}
 }
 

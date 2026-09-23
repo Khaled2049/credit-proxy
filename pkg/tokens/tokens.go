@@ -12,13 +12,12 @@ func Estimate(text string) int64 {
 	return max(1, words*13/10)
 }
 
-// EstimatePromptAndMaxCompletion returns the prompt token estimate and the true
-// upper bound on the call's total tokens: promptTokens + maxCompletion. The model
-// cannot emit more than maxCompletion, so reserving this amount guarantees
-// solvency (the call is never made unless the user can pay the maximum it could
-// cost); commit then reconciles down to real usage.
-func EstimatePromptAndMaxCompletion(prompt string, maxCompletion int64) (promptTokens, totalEstimated int64) {
-	promptTokens = Estimate(prompt)
+const inputOverheadTokens = 32
+
+func Ceiling(inputBytes int, maxCompletion int64) (promptTokens, totalTokens int64) {
+	if inputBytes > 0 {
+		promptTokens = int64(inputBytes) + inputOverheadTokens
+	}
 	if maxCompletion < 0 {
 		maxCompletion = 0
 	}

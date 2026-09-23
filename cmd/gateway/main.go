@@ -29,6 +29,7 @@ type server struct {
 	verifier        *authn.Verifier
 	maxOutputTokens int64
 	maxPromptChars  int
+	maxChatInput    int
 	tokensPerCredit int64
 	rateLimiter     *userRateLimiter
 	internalToken   string
@@ -54,6 +55,7 @@ func main() {
 		}),
 		maxOutputTokens: getenvInt64("MAX_OUTPUT_TOKENS", 8192),
 		maxPromptChars:  int(getenvInt64("MAX_PROMPT_CHARS", 64000)),
+		maxChatInput:    int(getenvInt64("MAX_CHAT_INPUT_BYTES", 262144)),
 		tokensPerCredit: getenvInt64("TOKENS_PER_CREDIT", 100),
 		rateLimiter:     newUserRateLimiter(int(getenvInt64("MAX_REQUESTS_PER_MINUTE_PER_USER", 10))),
 		internalToken:   strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_TOKEN")),
@@ -173,10 +175,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
 
-	// Authorization hold: reserve the true token ceiling (prompt + maxOutput),
-	// converted to credits via TOKENS_PER_CREDIT. Commit reconciles down to the
-	// provider's real usage below.
-	promptToks, estimatedTokens := tokens.EstimatePromptAndMaxCompletion(req.Prompt, req.MaxOutputTokens)
+	promptToks, estimatedTokens := tokens.Ceiling(len(req.Prompt), req.MaxOutputTokens)
 	estimatedCredits := tokens.ToCredits(estimatedTokens, s.tokensPerCredit)
 	reservationID := ""
 
