@@ -70,6 +70,8 @@ func TestHandleGenerateConvertsTokensToCredits(t *testing.T) {
 		maxPromptChars:  64000,
 		tokensPerCredit: 100,
 		rateLimiter:     newUserRateLimiter(10),
+
+		platformInferenceEnabled: true,
 	}
 
 	rr := httptest.NewRecorder()
@@ -288,6 +290,8 @@ func TestHandleGenerateReservesEveryByteOfUnspacedPrompt(t *testing.T) {
 		maxPromptChars:  64000,
 		tokensPerCredit: 100,
 		rateLimiter:     newUserRateLimiter(10),
+
+		platformInferenceEnabled: true,
 	}
 
 	prompt := strings.Repeat("x", 60000)
@@ -300,5 +304,62 @@ func TestHandleGenerateReservesEveryByteOfUnspacedPrompt(t *testing.T) {
 	}
 	if want := int64((60000 + 32 + 256 + 99) / 100); reservedCredits != want {
 		t.Fatalf("reserved credits = %d, want %d", reservedCredits, want)
+	}
+}
+
+func TestHandleGenerateKillSwitchBlocksPlatformOnly(t *testing.T) {
+	var reservations, generations int
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/reservations":
+			reservations++
+			var req contracts.ReservationRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			httpx.WriteJSON(w, http.StatusOK, contracts.ReservationResponse{ReservationID: req.ReservationID, UserID: req.UserID, Reserved: req.EstimatedCredits, Status: "reserved"})
+		case "/v1/generate":
+			generations++
+			httpx.WriteJSON(w, http.StatusOK, contracts.GenerateResponse{Output: "hi", Model: "mock", Usage: contracts.GenerateUsage{TotalTokens: 10}})
+		default:
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{})
+		}
+	}))
+	defer stub.Close()
+
+	s := &server{
+		usageURL: stub.URL, llmURL: stub.URL, ledgerURL: stub.URL,
+		client:          httpx.NewHTTPClient(5 * time.Second),
+		verifier:        authn.NewVerifier(authn.Config{Mode: authn.ModeDev}),
+		maxOutputTokens: 8192,
+		maxPromptChars:  64000,
+		tokensPerCredit: 100,
+		rateLimiter:     newUserRateLimiter(10),
+	}
+
+	generate := func(body string) int {
+		rr := httptest.NewRecorder()
+		s.handleGenerate(rr, httptest.NewRequest(http.MethodPost, "/v1/generate", strings.NewReader(body)))
+		return rr.Code
+	}
+
+	if code := generate(`{"user_id":"user123","prompt":"hello"}`); code != http.StatusServiceUnavailable {
+		t.Fatalf("platform request: status = %d, want 503", code)
+	}
+	if reservations != 0 || generations != 0 {
+		t.Fatalf("kill switch must refuse before reserving or calling the provider: reservations=%d generations=%d", reservations, generations)
+	}
+
+	if code := generate(`{"user_id":"user123","prompt":"hello","byok_provider":"gemini","byok_api_key":"user-key"}`); code != http.StatusOK {
+		t.Fatalf("byok request: status = %d, want 200", code)
+	}
+	if code := generate(`{"user_id":"user123","prompt":"hello","force_mock":true}`); code != http.StatusOK {
+		t.Fatalf("forced mock request: status = %d, want 200", code)
+	}
+	if generations != 2 {
+		t.Fatalf("generations = %d, want 2", generations)
+	}
+
+	s.platformInferenceEnabled = true
+	if code := generate(`{"user_id":"user123","prompt":"hello"}`); code != http.StatusOK {
+		t.Fatalf("platform request with switch on: status = %d, want 200", code)
 	}
 }

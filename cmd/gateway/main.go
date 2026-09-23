@@ -186,6 +186,11 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
 
+	if !isBYOK && !req.ForceMock && !s.platformInferenceEnabled {
+		http.Error(w, "platform inference is disabled (ref "+reqID+")", http.StatusServiceUnavailable)
+		return
+	}
+
 	promptToks, estimatedTokens := tokens.Ceiling(len(req.Prompt), req.MaxOutputTokens)
 	estimatedCredits := tokens.ToCredits(estimatedTokens, s.tokensPerCredit)
 	reservationID := ""
