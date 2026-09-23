@@ -31,8 +31,14 @@ go.work.sum
 
 # Environment
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+
+# Credentials
+gha-creds-*.json
+*.pem
+*.key
+*.p12
 
 # macOS
 .DS_Store
