@@ -9,21 +9,53 @@ import (
 
 func TestParseMode(t *testing.T) {
 	tests := []struct {
-		name string
-		raw  string
-		want Mode
+		name    string
+		raw     string
+		want    Mode
+		wantErr bool
 	}{
 		{name: "production", raw: "production", want: ModeProduction},
 		{name: "dev strict", raw: "dev_strict", want: ModeDevStrict},
-		{name: "unknown defaults to dev", raw: "staging", want: ModeDev},
-		{name: "empty defaults to dev", raw: "", want: ModeDev},
+		{name: "dev must be explicit", raw: " DEV ", want: ModeDev},
+		{name: "unknown is rejected", raw: "staging", wantErr: true},
+		{name: "empty is rejected", raw: "", wantErr: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ParseMode(tc.raw)
-			if got != tc.want {
-				t.Fatalf("expected mode %q, got %q", tc.want, got)
+			got, err := ParseMode(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got mode %q", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("expected mode %q, got %q (err %v)", tc.want, got, err)
+			}
+		})
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{name: "production fully configured", cfg: Config{Mode: ModeProduction, FirebaseProjectID: "p", AllowedCallerIdentities: []string{"sa@p.iam.gserviceaccount.com"}}},
+		{name: "production without firebase project", cfg: Config{Mode: ModeProduction, AllowedCallerIdentities: []string{"sa"}}, wantErr: true},
+		{name: "production without allowed callers", cfg: Config{Mode: ModeProduction, FirebaseProjectID: "p"}, wantErr: true},
+		{name: "dev strict without firebase project", cfg: Config{Mode: ModeDevStrict}, wantErr: true},
+		{name: "dev strict configured", cfg: Config{Mode: ModeDevStrict, FirebaseProjectID: "p"}},
+		{name: "dev", cfg: Config{Mode: ModeDev}},
+		{name: "zero value", cfg: Config{}, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %t", err, tc.wantErr)
 			}
 		})
 	}

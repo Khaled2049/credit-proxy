@@ -42,17 +42,28 @@ type server struct {
 
 func main() {
 	addr := getenv("GATEWAY_ADDR", ":8080")
+	authMode, err := authn.ParseMode(os.Getenv("AUTH_MODE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	authConfig := authn.Config{
+		Mode:                    authMode,
+		GCPAudience:             getenv("GCP_AUDIENCE", ""),
+		AllowedCallerIdentities: splitCSV(getenv("GCP_ALLOWED_CALLER_SA", "")),
+		FirebaseProjectID:       getenv("FIREBASE_PROJECT_ID", ""),
+	}
+	if err := authConfig.Validate(); err != nil {
+		log.Fatal(err)
+	}
+	if authMode == authn.ModeDev {
+		log.Printf("WARNING: AUTH_MODE=dev accepts any caller and trusts the user_id in the request body; never expose this gateway beyond localhost")
+	}
 	s := &server{
-		usageURL:  strings.TrimRight(getenv("USAGE_SERVICE_URL", "http://usage:8081"), "/"),
-		llmURL:    strings.TrimRight(getenv("LLM_PROXY_URL", "http://llmproxy:8082"), "/"),
-		ledgerURL: strings.TrimRight(getenv("LEDGER_SERVICE_URL", "http://ledger:8083"), "/"),
-		client:    httpx.NewHTTPClient(30 * time.Second),
-		verifier: authn.NewVerifier(authn.Config{
-			Mode:                    authn.ParseMode(getenv("AUTH_MODE", "dev")),
-			GCPAudience:             getenv("GCP_AUDIENCE", ""),
-			AllowedCallerIdentities: splitCSV(getenv("GCP_ALLOWED_CALLER_SA", "")),
-			FirebaseProjectID:       getenv("FIREBASE_PROJECT_ID", ""),
-		}),
+		usageURL:        strings.TrimRight(getenv("USAGE_SERVICE_URL", "http://usage:8081"), "/"),
+		llmURL:          strings.TrimRight(getenv("LLM_PROXY_URL", "http://llmproxy:8082"), "/"),
+		ledgerURL:       strings.TrimRight(getenv("LEDGER_SERVICE_URL", "http://ledger:8083"), "/"),
+		client:          httpx.NewHTTPClient(30 * time.Second),
+		verifier:        authn.NewVerifier(authConfig),
 		maxOutputTokens: getenvInt64("MAX_OUTPUT_TOKENS", 8192),
 		maxPromptChars:  int(getenvInt64("MAX_PROMPT_CHARS", 64000)),
 		maxChatInput:    int(getenvInt64("MAX_CHAT_INPUT_BYTES", 262144)),

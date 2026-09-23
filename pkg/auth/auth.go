@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -23,15 +24,35 @@ const (
 	ModeProduction Mode = "production"
 )
 
-func ParseMode(raw string) Mode {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case string(ModeProduction):
-		return ModeProduction
-	case string(ModeDevStrict):
-		return ModeDevStrict
+func ParseMode(raw string) (Mode, error) {
+	switch mode := Mode(strings.ToLower(strings.TrimSpace(raw))); mode {
+	case ModeProduction, ModeDevStrict, ModeDev:
+		return mode, nil
+	case "":
+		return "", errors.New("AUTH_MODE is required: set production, dev_strict or dev")
 	default:
-		return ModeDev
+		return "", fmt.Errorf("AUTH_MODE %q is not one of production, dev_strict or dev", raw)
 	}
+}
+
+func (c Config) Validate() error {
+	switch c.Mode {
+	case ModeProduction:
+		if strings.TrimSpace(c.FirebaseProjectID) == "" {
+			return errors.New("AUTH_MODE=production requires FIREBASE_PROJECT_ID")
+		}
+		if len(c.AllowedCallerIdentities) == 0 {
+			return errors.New("AUTH_MODE=production requires GCP_ALLOWED_CALLER_SA")
+		}
+	case ModeDevStrict:
+		if strings.TrimSpace(c.FirebaseProjectID) == "" {
+			return errors.New("AUTH_MODE=dev_strict requires FIREBASE_PROJECT_ID")
+		}
+	case ModeDev:
+	default:
+		return fmt.Errorf("unknown auth mode %q", c.Mode)
+	}
+	return nil
 }
 
 type Config struct {

@@ -166,10 +166,10 @@ credential checks use `/v1/providers` and `/v1/providers/validate`.
 | `USAGE_SERVICE_URL` | `http://usage:8081` | Gateway config |
 | `LLM_PROXY_URL` | `http://llmproxy:8082` | Gateway config |
 | `LEDGER_SERVICE_URL` | `http://ledger:8083` | Gateway config |
-| `AUTH_MODE` | `dev` | `dev` skips all auth; `dev_strict` requires Firebase token; `production` requires OIDC + Firebase |
+| `AUTH_MODE` | `dev` (Compose, `make run-gateway`) | **Required** — the gateway refuses to start if it is unset or unrecognized. `dev` skips all auth and is only for loopback; `dev_strict` requires a Firebase token and `FIREBASE_PROJECT_ID`; `production` requires OIDC + Firebase, `FIREBASE_PROJECT_ID` and `GCP_ALLOWED_CALLER_SA` |
 | `FIREBASE_PROJECT_ID` | `""` | Required in `dev_strict` / `production` for Firebase token verification |
 | `GCP_AUDIENCE` | `""` | OIDC token audience (production); derived from request Host if unset |
-| `GCP_ALLOWED_CALLER_SA` | `""` | Comma-separated allowed caller emails or subject IDs; empty = any valid token |
+| `GCP_ALLOWED_CALLER_SA` | `""` | Comma-separated allowed caller emails or subject IDs; required in `production` (startup fails if empty) |
 | `INTERNAL_SERVICE_TOKEN` | `""` | Shared secret gateway sends to llmproxy via `X-Internal-Token`; empty = no enforcement |
 | `MAX_OUTPUT_TOKENS` | `8192` | Gateway hard cap on `max_output_tokens` per request |
 | `MAX_PROMPT_CHARS` | `64000` | Gateway hard cap on `/v1/generate` prompt length in bytes |
