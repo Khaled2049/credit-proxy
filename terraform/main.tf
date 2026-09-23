@@ -251,11 +251,6 @@ resource "google_cloud_run_v2_service" "llmproxy" {
       }
 
       env {
-        name  = "LLMPROXY_ADDR"
-        value = ":8080"
-      }
-
-      env {
         name  = "LLM_PROVIDER"
         value = var.llm_provider
       }

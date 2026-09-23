@@ -3,19 +3,19 @@ info:
   title: creditProxy LLM Proxy
   description: |
     Internal provider adapter — the only service that talks to actual LLM APIs.
-    The server-wide provider is chosen at startup (`LLM_PROVIDER`: gemini,
-    openai, anthropic, ollama, mock). Per-request overrides: `force_mock: true`
-    routes to the mock provider; BYOK fields build a one-off provider from the
-    caller's own API key.
+    Python/LiteLLM adapter for a curated Gemini, OpenAI, and Anthropic catalog.
+    Per-request overrides use the caller's key only for that request; the mock
+    provider remains available for deterministic local tests.
 
-    When `INTERNAL_SERVICE_TOKEN` is configured, `/v1/generate` requires the
-    `X-Internal-Token` header (sent by the gateway).
+    When `INTERNAL_SERVICE_TOKEN` is configured, all `/v1/*` endpoints require
+    the `X-Internal-Token` header sent by the gateway.
   version: 1.0.0
 servers:
   - url: http://localhost:8082
     description: Local / Docker
 tags:
   - name: generation
+  - name: providers
   - name: system
 paths:
   /health:
@@ -41,6 +41,48 @@ paths:
                   provider:
                     type: string
                     example: mock
+  /v1/providers:
+    get:
+      tags: [providers]
+      summary: Get the curated model catalog
+      security: [{ internalToken: [] }]
+      responses:
+        "200":
+          description: Provider and model metadata
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { description: Missing or invalid internal token }
+  /v1/providers/validate:
+    post:
+      tags: [providers]
+      summary: Validate one provider key/model pair
+      security: [{ internalToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, api_key]
+              properties:
+                provider: { type: string, enum: [gemini, anthropic, claude, openai] }
+                api_key: { type: string, writeOnly: true }
+                model: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid: { type: boolean }
+                  provider: { type: string }
+                  model: { type: string }
+                  error: { type: string }
+        "401": { description: Missing or invalid internal token }
   /v1/generate:
     post:
       tags: [generation]

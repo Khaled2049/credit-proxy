@@ -1,12 +1,13 @@
 # creditProxy API Documentation
 
-Four Go microservices behind a single public entry point (the **gateway**). The other three services are internal — in Docker they are only reachable on the compose network, but when running locally you can hit them directly on their ports for testing.
+Three Go services and one private Python/LiteLLM adapter sit behind the **gateway**.
+The other services are internal and are only reachable on the Docker Compose network.
 
 | Service  | Port | Role | Backing store | OpenAPI spec |
 |----------|------|------|---------------|--------------|
 | gateway  | 8080 | Public API: auth, rate limiting, credit orchestration | — | [`openapi/gateway.yaml`](openapi/gateway.yaml) |
 | usage    | 8081 | Credit balances, reservations, platform daily cap | Redis 7 | [`openapi/usage.yaml`](openapi/usage.yaml) |
-| llmproxy | 8082 | Talks to the actual LLM provider (Gemini/OpenAI/Anthropic/Ollama/mock) | Provider APIs | [`openapi/llmproxy.yaml`](openapi/llmproxy.yaml) |
+| llmproxy | 8082 | LiteLLM adapter for Gemini/OpenAI/Anthropic/mock | Provider APIs | [`openapi/llmproxy.yaml`](openapi/llmproxy.yaml) |
 | ledger   | 8083 | Append-only audit log of every credit event | Postgres 16 | [`openapi/ledger.yaml`](openapi/ledger.yaml) |
 
 Import any of the YAML files in [`docs/openapi/`](openapi/) into Postman (*Import → File*) or Insomnia (*Create → Import*). Each spec carries its own `localhost` server URL, so requests work out of the box against `make docker-up`.
@@ -29,7 +30,7 @@ The main endpoint. Two paths:
 5. On success, commit the reservation with the provider's *actual* token usage (over/under-spend is reconciled). On LLM failure, release the reservation.
 6. Every step emits an event to **ledger** (`credits_reserved`, `credits_committed`, `credits_released`, `commit_failed`).
 
-**BYOK path** (`byok_provider` + `byok_api_key` present): skips credit reservation entirely; llmproxy builds a one-off provider from the caller's key. Only a `byok_generate` audit event is written.
+**BYOK path** (`byok_provider` + `byok_api_key` present): skips credit reservation entirely; the LiteLLM adapter uses the caller's key only for that request. Only a `byok_generate` audit event is written.
 
 Request body:
 
@@ -114,10 +115,17 @@ Gated by `ENABLE_PURCHASE_API` (returns `404` when disabled). Enforces `MAX_PURC
 
 ## LLM Proxy (`:8082`) — provider adapter
 
-The only service that talks to actual LLM APIs. Provider is chosen at startup (`LLM_PROVIDER`: `gemini`, `openai`, `anthropic`, `ollama`, `mock`), overridable per-request:
+The only service that talks to actual LLM APIs. It is implemented in Python under
+`services/litellm_adapter` and uses a pinned LiteLLM release. The platform provider
+is chosen at startup (`LLM_PROVIDER`: `gemini`, `openai`, `anthropic`, `mock`) and
+can be overridden per request:
 
 - `force_mock: true` → mock provider
-- `byok_provider` + `byok_api_key` → fresh provider built from the request's key (`gemini`, `openai`, `anthropic`/`claude`)
+- `byok_provider` + `byok_api_key` → request-scoped provider credentials (`gemini`, `openai`, `anthropic`/legacy `claude`)
+
+The adapter also exposes `GET /v1/providers` for the curated catalog and
+`POST /v1/providers/validate` for a one-token key/model validation. Both require
+the internal service token; the gateway exposes corresponding authenticated routes.
 
 ### `POST /v1/generate`
 

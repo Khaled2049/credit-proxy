@@ -71,6 +71,8 @@ func main() {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/generate", s.handleGenerate)
 	mux.HandleFunc("/v1/chat", s.handleChat)
+	mux.HandleFunc("/v1/providers", s.handleProviders)
+	mux.HandleFunc("/v1/providers/validate", s.handleProviderValidation)
 	mux.HandleFunc("/v1/users/", s.handleUserBalance)
 	mux.HandleFunc("/v1/credits/purchase", s.handlePurchase)
 

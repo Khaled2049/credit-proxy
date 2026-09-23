@@ -31,12 +31,11 @@ services:
   llmproxy:
     build:
       context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE: llmproxy
+      dockerfile: services/litellm_adapter/Dockerfile
     environment:
-      LLMPROXY_ADDR: ":8082"
+      PORT: "8082"
       LLM_PROVIDER: "${LLM_PROVIDER:-mock}"
+      PLATFORM_MODEL: "${PLATFORM_MODEL:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash-lite}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
@@ -45,8 +44,6 @@ services:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-sonnet-4-6}"
       ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}"
-      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434}"
-      OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3}"
       LOCAL_UNMETERED: "${LOCAL_UNMETERED:-false}"
       INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN:-}"
 

@@ -63,6 +63,20 @@ type GenerateResponse struct {
 	Usage  GenerateUsage `json:"usage"`
 }
 
+type ProviderValidationRequest struct {
+	UserID   string `json:"user_id"`
+	Provider string `json:"provider"`
+	APIKey   string `json:"api_key"`
+	Model    string `json:"model,omitempty"`
+}
+
+type ProviderValidationResponse struct {
+	Valid    bool   `json:"valid"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
 type LedgerEventRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 	UserID         string `json:"user_id"`

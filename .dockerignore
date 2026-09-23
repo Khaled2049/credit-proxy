@@ -1,0 +1,9 @@
+.git
+.github
+.terraform
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+terraform
+docs

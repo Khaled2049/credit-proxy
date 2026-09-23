@@ -2,11 +2,14 @@
 
 **v0.2.0** — Credit-metered AI gateway for TheTaleTribe. Routes LLM requests through a reserve/commit/release credit lifecycle so the platform never overspends, with full BYOK support that bypasses billing entirely.
 
-Four Go microservices, a Redis credit ledger, and a Postgres audit trail — all running in a single `docker compose up`.
+Three Go services, one private Python/LiteLLM provider adapter, a Redis credit ledger,
+and a Postgres audit trail — all running in a single `docker compose up`.
+The previous `cmd/llmproxy` Go implementation remains as rollback/reference code;
+Compose and Cloud Run build `services/litellm_adapter`.
 
 ## Key features
 
-- **Multi-provider** — Gemini, Claude, OpenAI, Ollama, and a built-in mock for testing
+- **Multi-provider** — a curated Gemini, Anthropic, and OpenAI model catalog through LiteLLM, plus a built-in mock for testing
 - **Reserve/commit/release** — credits are held before the LLM call and reconciled to actual token usage after; unused tokens are refunded automatically
 - **BYOK** — requests carrying a user's own API key skip credit reservation completely and call the provider directly
 - **Platform daily cap** — hard ceiling on non-BYOK requests per UTC day keeps the platform inside the LLM provider's free tier regardless of user count

@@ -55,7 +55,7 @@ run-usage:
 	go run -ldflags "$(LDFLAGS)" ./cmd/usage
 
 run-llmproxy:
-	go run -ldflags "$(LDFLAGS)" ./cmd/llmproxy
+	PORT=8082 uv run --project services/litellm_adapter uvicorn app.main:app --reload
 
 run-ledger:
 	go run -ldflags "$(LDFLAGS)" ./cmd/ledger
@@ -112,9 +112,7 @@ build-images:
 	  -t creditproxy-usage:$(VERSION) \
 	  -t creditproxy-usage:latest .
 	docker build \
-	  --build-arg SERVICE=llmproxy \
-	  --build-arg VERSION=$(VERSION) \
-	  --build-arg GIT_COMMIT=$(COMMIT) \
+	  -f services/litellm_adapter/Dockerfile \
 	  -t creditproxy-llmproxy:$(VERSION) \
 	  -t creditproxy-llmproxy:latest .
 	docker build \
