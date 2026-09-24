@@ -4,17 +4,17 @@ version = "0.1.0"
 description = "Internal LiteLLM provider adapter for creditProxy"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "fastapi==0.116.1",
-  "litellm==1.94.2",
-  "pydantic==2.11.7",
-  "uvicorn==0.35.0",
+  "fastapi==0.141.1",
+  "litellm==1.102.0",
+  "pydantic==2.13.5",
+  "uvicorn==0.53.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "httpx==0.28.1",
   "pytest==8.4.1",
-  "pytest-asyncio==1.1.0",
+  "pytest-asyncio==1.4.0",
 ]
 
 [tool.pytest.ini_options]
