@@ -1,6 +1,6 @@
 # Keep production dependencies exact. 1.82.7 and 1.82.8 are explicitly banned
 # because those PyPI releases were compromised in March 2026.
-fastapi==0.116.1
-litellm==1.94.2
-pydantic==2.11.7
-uvicorn==0.35.0
+fastapi==0.141.1
+litellm==1.102.0
+pydantic==2.13.5
+uvicorn==0.53.0
