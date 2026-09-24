@@ -91,7 +91,8 @@ def _editor_events(request: ChatRequest) -> list[dict[str, Any]]:
         return _tool_call(
             "mock-read-editor", "read_current_editor", {"selectionOnly": True}
         )
-    selection = result.get("selection") if isinstance(result.get("selection"), dict) else {}
+    selection_value = result.get("selection")
+    selection = selection_value if isinstance(selection_value, dict) else {}
     chapter_id = result.get("chapter_id")
     original = selection.get("text")
     if not chapter_id or not original:
