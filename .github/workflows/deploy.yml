@@ -7,20 +7,22 @@ on:
       - "**.md"
       - "LICENSE"
       - ".gitignore"
-  workflow_dispatch:
+  workflow_dispatch: null
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: credit-proxy-production
   cancel-in-progress: false
-
 env:
   PROJECT_ID: story-6f89f
   REGION: us-central1
   ARTIFACT_REGISTRY_REPO: credit-proxy
 
 jobs:
+  test:
+    name: credit-proxy / deploy-validation
+    uses: ./.github/workflows/pr-check.yml
   deploy:
-    name: Build and Deploy
+    name: credit-proxy / deploy-deploy
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
@@ -28,20 +30,17 @@ jobs:
     permissions:
       contents: read
       id-token: write
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f  # v2
       - name: Create Artifact Registry repository if needed
         run: |
           if output=$(gcloud artifacts repositories describe "$ARTIFACT_REGISTRY_REPO" \
@@ -60,35 +59,37 @@ jobs:
           fi
 
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev
 
       - name: Build and push Docker images
         run: |
-          REGISTRY="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}"
+          REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}"
           for SERVICE in gateway usage ledger; do
             echo "Building $SERVICE..."
             docker build \
               --build-arg SERVICE=${SERVICE} \
-              --build-arg VERSION=${{ github.sha }} \
-              --build-arg GIT_COMMIT=${{ github.sha }} \
-              -t ${REGISTRY}/${SERVICE}:${{ github.sha }} \
+              --build-arg VERSION=${INPUT_GITHUB_SHA} \
+              --build-arg GIT_COMMIT=${INPUT_GITHUB_SHA} \
+              -t ${REGISTRY}/${SERVICE}:${INPUT_GITHUB_SHA} \
               .
-            docker push ${REGISTRY}/${SERVICE}:${{ github.sha }}
+            docker push ${REGISTRY}/${SERVICE}:${INPUT_GITHUB_SHA}
           done
           echo "Building Python LiteLLM adapter..."
           docker build \
             -f services/litellm_adapter/Dockerfile \
-            -t ${REGISTRY}/llmproxy:${{ github.sha }} \
+            -t ${REGISTRY}/llmproxy:${INPUT_GITHUB_SHA} \
             .
-          docker push ${REGISTRY}/llmproxy:${{ github.sha }}
+          docker push ${REGISTRY}/llmproxy:${INPUT_GITHUB_SHA}
 
+        env:
+          INPUT_GITHUB_SHA: ${{ github.sha }}
       - name: Ensure Terraform state bucket exists
         run: |
           BUCKET=story-6f89f-tfstate
           if ! gcloud storage buckets describe gs://$BUCKET >/dev/null 2>&1; then
             echo "Creating Terraform state bucket..."
             gcloud storage buckets create gs://$BUCKET \
-              --location=${{ env.REGION }} \
+              --location=${REGION} \
               --uniform-bucket-level-access
             gcloud storage buckets update gs://$BUCKET --versioning
           else
@@ -104,13 +105,13 @@ jobs:
               echo "Skipping $NAME (empty value)"
               return
             fi
-            if gcloud secrets describe "${NAME}" --project=${{ env.PROJECT_ID }} >/dev/null 2>&1; then
+            if gcloud secrets describe "${NAME}" --project=${PROJECT_ID} >/dev/null 2>&1; then
               CURRENT=$(gcloud secrets versions access latest --secret="${NAME}" \
-                --project=${{ env.PROJECT_ID }} 2>/dev/null || echo "")
+                --project=${PROJECT_ID} 2>/dev/null || echo "")
               if [ "$CURRENT" != "$VALUE" ]; then
                 echo "Updating $NAME..."
                 printf '%s' "$VALUE" | gcloud secrets versions add "${NAME}" \
-                  --data-file=- --project=${{ env.PROJECT_ID }}
+                  --data-file=- --project=${PROJECT_ID}
               else
                 echo "$NAME unchanged, skipping"
               fi
@@ -118,19 +119,26 @@ jobs:
               echo "Creating $NAME..."
               printf '%s' "$VALUE" | gcloud secrets create "${NAME}" \
                 --data-file=- --replication-policy=automatic \
-                --project=${{ env.PROJECT_ID }}
+                --project=${PROJECT_ID}
             fi
           }
 
-          create_or_update_secret "creditproxy-gemini-api-key"    "${{ secrets.GEMINI_API_KEY }}"
-          create_or_update_secret "creditproxy-openai-api-key"    "${{ secrets.OPENAI_API_KEY }}"
-          create_or_update_secret "creditproxy-anthropic-api-key" "${{ secrets.ANTHROPIC_API_KEY }}"
-          create_or_update_secret "creditproxy-upstash-redis-url" "${{ secrets.UPSTASH_REDIS_URL }}"
-          create_or_update_secret "creditproxy-postgres-dsn"      "${{ secrets.NEON_DATABASE_URL }}"
-          create_or_update_secret "creditproxy-internal-service-token" "${{ secrets.INTERNAL_SERVICE_TOKEN }}"
+          create_or_update_secret "creditproxy-gemini-api-key"    "${INPUT_SECRETS_GEMINI_API_KEY}"
+          create_or_update_secret "creditproxy-openai-api-key"    "${INPUT_SECRETS_OPENAI_API_KEY}"
+          create_or_update_secret "creditproxy-anthropic-api-key" "${INPUT_SECRETS_ANTHROPIC_API_KEY}"
+          create_or_update_secret "creditproxy-upstash-redis-url" "${INPUT_SECRETS_UPSTASH_REDIS_URL}"
+          create_or_update_secret "creditproxy-postgres-dsn"      "${INPUT_SECRETS_NEON_DATABASE_URL}"
+          create_or_update_secret "creditproxy-internal-service-token" "${INPUT_SECRETS_INTERNAL_SERVICE_TOKEN}"
 
+        env:
+          INPUT_SECRETS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INPUT_SECRETS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          INPUT_SECRETS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INPUT_SECRETS_UPSTASH_REDIS_URL: ${{ secrets.UPSTASH_REDIS_URL }}
+          INPUT_SECRETS_NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          INPUT_SECRETS_INTERNAL_SERVICE_TOKEN: ${{ secrets.INTERNAL_SERVICE_TOKEN }}
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3
         with:
           terraform_version: 1.14.4
           terraform_wrapper: false
@@ -142,15 +150,18 @@ jobs:
       - name: Terraform Plan
         working-directory: ./terraform
         run: |
-          REGISTRY="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}"
+          REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}"
           terraform plan \
-            -var="gateway_image=${REGISTRY}/gateway:${{ github.sha }}" \
-            -var="usage_image=${REGISTRY}/usage:${{ github.sha }}" \
-            -var="llmproxy_image=${REGISTRY}/llmproxy:${{ github.sha }}" \
-            -var="ledger_image=${REGISTRY}/ledger:${{ github.sha }}" \
-            -var="gemini_model=${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}" \
+            -var="gateway_image=${REGISTRY}/gateway:${INPUT_GITHUB_SHA}" \
+            -var="usage_image=${REGISTRY}/usage:${INPUT_GITHUB_SHA}" \
+            -var="llmproxy_image=${REGISTRY}/llmproxy:${INPUT_GITHUB_SHA}" \
+            -var="ledger_image=${REGISTRY}/ledger:${INPUT_GITHUB_SHA}" \
+            -var="gemini_model=${INPUT_VARS_GEMINI_MODEL_GEMINI_2_5_FLASH_LITE}" \
             -out=tfplan
 
+        env:
+          INPUT_GITHUB_SHA: ${{ github.sha }}
+          INPUT_VARS_GEMINI_MODEL_GEMINI_2_5_FLASH_LITE: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
       - name: Terraform Apply
         working-directory: ./terraform
         run: terraform apply -auto-approve tfplan
@@ -163,15 +174,23 @@ jobs:
       - name: Verify deployment via Cloud Run API
         run: |
           gcloud run services describe credit-proxy-gateway \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }} \
+            --region=${REGION} \
+            --project=${PROJECT_ID} \
             --format="value(status.conditions[0].status,status.conditions[0].type)"
 
       - name: Deployment Summary
         run: |
           echo "## Deployment Successful" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Gateway:** ${{ steps.get_url.outputs.gateway_url }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image Tag:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Region:** ${{ env.REGION }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gateway:** ${INPUT_STEPS_GET_URL_OUTPUTS_GATEWAY_URL}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** \`${INPUT_GITHUB_SHA}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region:** ${REGION}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** [${INPUT_GITHUB_SHA}](${INPUT_GITHUB_SERVER_URL}/${INPUT_GITHUB_REPOSITORY}/commit/${INPUT_GITHUB_SHA})" >> $GITHUB_STEP_SUMMARY
+        env:
+          INPUT_STEPS_GET_URL_OUTPUTS_GATEWAY_URL: ${{ steps.get_url.outputs.gateway_url }}
+          INPUT_GITHUB_SHA: ${{ github.sha }}
+          INPUT_GITHUB_SERVER_URL: ${{ github.server_url }}
+          INPUT_GITHUB_REPOSITORY: ${{ github.repository }}
+    needs: test
+permissions:
+  contents: read

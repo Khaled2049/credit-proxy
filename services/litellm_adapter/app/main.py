@@ -141,11 +141,11 @@ async def chat(request: ChatRequest):
     mock = request.force_mock or os.getenv("LLM_PROVIDER", "").lower() == "mock"
     if request.stream:
         try:
-            prepared = None if mock else await _prepared_events(request)
+            prepared = mock_events(request) if mock else await _prepared_events(request)
         except AdapterError as error:
             raise HTTPException(status_code=error.status_code, detail=error.code) from None
-        events = _event_source(mock_events(request) if mock else prepared)
-        return StreamingResponse(events, media_type="text/event-stream")
+        stream = _event_source(prepared)
+        return StreamingResponse(stream, media_type="text/event-stream")
 
     if mock:
         events = [event async for event in mock_events(request)]
@@ -164,7 +164,7 @@ async def chat(request: ChatRequest):
         }.get(code, 502)
         raise HTTPException(status_code=status, detail=code)
     text = "".join(event.get("text", "") for event in events if event["type"] == "text_delta")
-    usage = next((event.get("usage", {}) for event in events if event["type"] == "usage"), {})
+    usage: dict[str, Any] = next((event.get("usage", {}) for event in events if event["type"] == "usage"), {})
     done = next((event for event in events if event["type"] == "done"), {"finish_reason": "error"})
     provider = next((event.get("provider") for event in events if event.get("provider")), "unknown")
     model = next((event.get("model") for event in events if event.get("model")), "unknown")
