@@ -1,4 +1,4 @@
-FROM golang:1.26.8-alpine AS builder
+FROM golang:1.27.1-alpine AS builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
               -X github.com/kh1011/creditproxy/pkg/version.Commit=${GIT_COMMIT}" \
     -o /out/service ./cmd/${SERVICE}
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN adduser -D -u 10001 appuser
 USER appuser
 WORKDIR /app
