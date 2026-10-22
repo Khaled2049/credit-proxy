@@ -31,6 +31,7 @@ func newTestServer(usageURL string) *server {
 // also converted — both via TOKENS_PER_CREDIT.
 func TestHandleGenerateConvertsTokensToCredits(t *testing.T) {
 	var reservedCredits, committedCredits int64
+	var events []contracts.LedgerEventRequest
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/reservations" && r.Method == http.MethodPost:
@@ -53,6 +54,9 @@ func TestHandleGenerateConvertsTokensToCredits(t *testing.T) {
 			committedCredits = req.ActualCredits
 			httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "committed"})
 		case r.URL.Path == "/v1/events" && r.Method == http.MethodPost:
+			var event contracts.LedgerEventRequest
+			_ = json.NewDecoder(r.Body).Decode(&event)
+			events = append(events, event)
 			httpx.WriteJSON(w, http.StatusOK, map[string]any{})
 		default:
 			http.NotFound(w, r)
@@ -76,7 +80,7 @@ func TestHandleGenerateConvertsTokensToCredits(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/generate",
-		strings.NewReader(`{"user_id":"user123","prompt":"hello world","max_output_tokens":1024}`))
+		strings.NewReader(`{"user_id":"user123","prompt":"hello world","max_output_tokens":1024,"feature":"next_line"}`))
 	s.handleGenerate(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -96,6 +100,27 @@ func TestHandleGenerateConvertsTokensToCredits(t *testing.T) {
 	}
 	if out["estimated_credits"].(float64) != 11 || out["actual_credits"].(float64) != 5 {
 		t.Errorf("response estimated=%v actual=%v, want 11/5", out["estimated_credits"], out["actual_credits"])
+	}
+	if len(events) != 2 || events[0].EventType != "credits_reserved" || events[1].EventType != "credits_committed" {
+		t.Fatalf("ledger events = %+v, want reserve then commit", events)
+	}
+	for _, event := range events {
+		if payload := event.Payload.(map[string]any); payload["feature"] != "next_line" {
+			t.Errorf("%s feature = %v, want next_line", event.EventType, payload["feature"])
+		}
+	}
+	if model := events[1].Payload.(map[string]any)["model"]; model != "mock" {
+		t.Errorf("commit model = %v, want mock", model)
+	}
+}
+
+func TestUsageFeatureFoldsUnknownToOther(t *testing.T) {
+	for raw, want := range map[string]string{
+		"assistant": "assistant", "next_line": "next_line", "": "other", "Next_Line": "other", "made_up": "other",
+	} {
+		if got := usageFeature(raw); got != want {
+			t.Errorf("usageFeature(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 
@@ -185,7 +210,15 @@ func TestHandleUserBalanceBadPath(t *testing.T) {
 
 func TestHandlePurchase(t *testing.T) {
 	var gotBody map[string]any
+	var events []contracts.LedgerEventRequest
 	usage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/events" {
+			var event contracts.LedgerEventRequest
+			_ = json.NewDecoder(r.Body).Decode(&event)
+			events = append(events, event)
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"user_id":           "user123",
@@ -196,6 +229,7 @@ func TestHandlePurchase(t *testing.T) {
 	defer usage.Close()
 
 	s := newTestServer(usage.URL)
+	s.ledgerURL = usage.URL
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/credits/purchase",
 		strings.NewReader(`{"user_id":"user123","credits":10000}`))
@@ -211,6 +245,9 @@ func TestHandlePurchase(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
 	if out["available_credits"].(float64) != 11749 {
 		t.Errorf("available_credits = %v, want 11749", out["available_credits"])
+	}
+	if len(events) != 1 || events[0].EventType != "credits_purchased" || events[0].Credits != 10000 || events[0].UserID != "user123" {
+		t.Errorf("ledger events = %+v, want one credits_purchased for 10000", events)
 	}
 }
 

@@ -126,6 +126,35 @@ func (v *Verifier) verifyCaller(ctx context.Context, authHeader, audience string
 	return nil
 }
 
+// RequireAdmin authorizes the /v1/admin routes: the calling service must pass
+// the usual OIDC check, and the forwarded Firebase token must carry a verified
+// admin claim. Revocation is checked too, so removing an admin takes effect at
+// once rather than when their token expires. Dev mode skips every check, as it
+// does for all routes, and is only for loopback.
+func (v *Verifier) RequireAdmin(ctx context.Context, r *http.Request) (string, *HTTPError) {
+	if err := v.verifyCaller(ctx, r.Header.Get("Authorization"), audienceFromRequest(r)); err != nil {
+		return "", err
+	}
+	if !v.requiresFirebaseToken() {
+		return "", nil
+	}
+	firebaseToken := strings.TrimSpace(r.Header.Get(FirebaseTokenHeader))
+	if firebaseToken == "" {
+		return "", &HTTPError{StatusCode: http.StatusUnauthorized, Message: "missing firebase token"}
+	}
+	if err := v.ensureFirebaseClient(); err != nil {
+		return "", &HTTPError{StatusCode: http.StatusInternalServerError, Message: "firebase auth is not configured"}
+	}
+	token, err := v.client.VerifyIDTokenAndCheckRevoked(ctx, firebaseToken)
+	if err != nil {
+		return "", &HTTPError{StatusCode: http.StatusUnauthorized, Message: "invalid firebase token"}
+	}
+	if admin, _ := token.Claims["admin"].(bool); !admin {
+		return "", &HTTPError{StatusCode: http.StatusForbidden, Message: "admin only"}
+	}
+	return token.UID, nil
+}
+
 func (v *Verifier) verifyFirebaseUser(ctx context.Context, firebaseToken string) (string, *HTTPError) {
 	firebaseToken = strings.TrimSpace(firebaseToken)
 	if !v.requiresFirebaseToken() {

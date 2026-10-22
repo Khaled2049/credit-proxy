@@ -148,6 +148,8 @@ func main() {
 	mux.HandleFunc("/v1/reservations", s.handleCreateReservation)
 	mux.HandleFunc("/v1/reservations/", s.handleReservationAction)
 	mux.HandleFunc("/v1/users/", s.handleUserRoutes)
+	mux.HandleFunc("/v1/admin/platform/today", s.handleAdminPlatformToday)
+	mux.HandleFunc("/v1/admin/users/", s.handleAdminUserBalance)
 
 	log.Printf("usage listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))

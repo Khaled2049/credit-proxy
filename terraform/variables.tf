@@ -156,3 +156,12 @@ variable "platform_inference_enabled" {
   type        = string
   default     = "true"
 }
+
+# Gen 2 Firebase Functions runtime identity. The admin AI usage Function calls
+# the gateway's /v1/admin routes directly; the gateway still requires an admin
+# claim on the forwarded Firebase token, so this grants nothing by itself.
+variable "firebase_functions_service_account" {
+  description = "Firebase Functions runtime identity allowed to call the gateway."
+  type        = string
+  default     = "793308156964-compute@developer.gserviceaccount.com"
+}

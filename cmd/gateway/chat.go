@@ -86,6 +86,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	reqID := ids.New("req")
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
+	feature := usageFeature(req.Feature)
 
 	// Four billing modes, and only one of them touches credits. "local" is a
 	// validated local model (LOCAL_UNMETERED); llmproxy refuses to start if that
@@ -137,7 +138,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			ReservationID:  reservationID,
 			EventType:      "credits_reserved",
 			Credits:        estimatedCredits,
-			Payload:        map[string]any{"prompt_tokens": promptTokens, "estimated_total_tokens": estimatedTokens, "surface": "chat"},
+			Payload:        map[string]any{"prompt_tokens": promptTokens, "estimated_total_tokens": estimatedTokens, "surface": "chat", "feature": feature},
 		})
 	}
 
@@ -159,6 +160,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			idempotencyKey:   req.IdempotencyKey,
 			billing:          billing,
 			estimatedCredits: estimatedCredits,
+			feature:          feature,
 		})
 		return
 	}
@@ -169,6 +171,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sawUsage        bool
 		sawError        bool
 		actualCredits   int64
+		provider, model string
+		usage           *contracts.GenerateUsage
 	)
 
 	relayErr := httpx.PostSSE(r.Context(), s.streamClient, s.llmURL+"/v1/chat", upstream, llmHeaders, func(raw []byte) error {
@@ -176,11 +180,15 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return fmt.Errorf("decode upstream event: %w", err)
 		}
+		if event.Model != "" {
+			provider, model = event.Provider, event.Model
+		}
 		switch event.Type {
 		case contracts.ChatEventTextDelta, contracts.ChatEventToolCallDelta:
 			billableStarted = true
 		case contracts.ChatEventUsage:
 			sawUsage = true
+			usage = event.Usage
 			// llmproxy reports tokens; credits are the gateway's to decide.
 			if !metered {
 				event.Credits = 0
@@ -228,6 +236,10 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sawUsage:         sawUsage,
 		actualCredits:    actualCredits,
 		estimatedCredits: estimatedCredits,
+		feature:          feature,
+		provider:         provider,
+		model:            model,
+		usage:            usage,
 	})
 
 	if relayErr == nil {
@@ -274,6 +286,10 @@ func (s *server) bufferedChat(w http.ResponseWriter, r *http.Request, upstream c
 		resp.Credits = 0
 	}
 	p.sawUsage = resp.Usage.TotalTokens > 0
+	p.provider, p.model = resp.Provider, resp.Model
+	if p.sawUsage {
+		p.usage = &resp.Usage
+	}
 	s.settleChat(r, p)
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }
@@ -289,6 +305,26 @@ type settleParams struct {
 	sawUsage         bool
 	actualCredits    int64
 	estimatedCredits int64
+
+	// Reporting only; none of these affect what is billed.
+	feature  string
+	provider string
+	model    string
+	usage    *contracts.GenerateUsage
+}
+
+// ledgerPayload adds the reporting fields to a settlement event's payload.
+func (p settleParams) ledgerPayload(fields map[string]any) map[string]any {
+	fields["surface"] = "chat"
+	fields["feature"] = p.feature
+	if p.model != "" {
+		fields["provider"] = p.provider
+		fields["model"] = p.model
+	}
+	if p.usage != nil {
+		fields["actual_tokens"] = *p.usage
+	}
+	return fields
 }
 
 // settleChat applies the billing outcome of a finished stream:
@@ -314,7 +350,7 @@ func (s *server) settleChat(r *http.Request, p settleParams) {
 			IdempotencyKey: p.idempotencyKey + ":commit",
 			UserID:         p.userID,
 			EventType:      eventType,
-			Payload:        map[string]any{"failed": p.failed, "surface": "chat"},
+			Payload:        p.ledgerPayload(map[string]any{"failed": p.failed}),
 		})
 		return
 	}
@@ -335,7 +371,7 @@ func (s *server) settleChat(r *http.Request, p settleParams) {
 			ReservationID:  p.reservationID,
 			EventType:      "credits_released",
 			Credits:        p.estimatedCredits,
-			Payload:        map[string]any{"reason": "chat_failed_before_output", "surface": "chat"},
+			Payload:        p.ledgerPayload(map[string]any{"reason": "chat_failed_before_output"}),
 		})
 	default:
 		s.commitChat(ctx, p, p.estimatedCredits, "credits_committed_unknown", "unknown")
@@ -351,7 +387,7 @@ func (s *server) commitChat(ctx context.Context, p settleParams, credits int64, 
 			ReservationID:  p.reservationID,
 			EventType:      "commit_failed",
 			Credits:        credits,
-			Payload:        map[string]any{"error": err.Error(), "surface": "chat"},
+			Payload:        p.ledgerPayload(map[string]any{"error": err.Error()}),
 		})
 		return
 	}
@@ -361,12 +397,11 @@ func (s *server) commitChat(ctx context.Context, p settleParams, credits int64, 
 		ReservationID:  p.reservationID,
 		EventType:      eventType,
 		Credits:        credits,
-		Payload: map[string]any{
+		Payload: p.ledgerPayload(map[string]any{
 			"estimated_credits": p.estimatedCredits,
 			"usage_basis":       basis,
 			"failed":            p.failed,
-			"surface":           "chat",
-		},
+		}),
 	})
 }
 

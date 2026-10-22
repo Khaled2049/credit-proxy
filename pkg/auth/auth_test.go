@@ -1,10 +1,15 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 )
 
 func TestParseMode(t *testing.T) {
@@ -155,5 +160,79 @@ func TestMatchesIdentity(t *testing.T) {
 	}
 	if matchesIdentity(allowed, "other@project.iam.gserviceaccount.com", "other-subject") {
 		t.Fatal("expected mismatched identities to be rejected")
+	}
+}
+
+func TestRequireAdminRefusesMissingCredentials(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/v1/admin/usage/daily", nil)
+	if _, err := NewVerifier(Config{Mode: ModeDevStrict}).RequireAdmin(context.Background(), req); err == nil || err.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("dev_strict without a Firebase token = %v, want 401", err)
+	}
+	prod := NewVerifier(Config{Mode: ModeProduction, GCPAudience: "https://example.com"})
+	if _, err := prod.RequireAdmin(context.Background(), httptest.NewRequest(http.MethodGet, "https://example.com/v1/admin/usage/daily", nil)); err == nil || err.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("production without a caller token = %v, want 401", err)
+	}
+	if _, err := NewVerifier(Config{Mode: ModeDev}).RequireAdmin(context.Background(), req); err != nil {
+		t.Fatalf("dev mode skips every check: %v", err)
+	}
+}
+
+// TestRequireAdminAgainstAuthEmulator needs the Firebase Auth emulator, e.g.
+// FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 FIREBASE_TEST_PROJECT=story-6f89f.
+func TestRequireAdminAgainstAuthEmulator(t *testing.T) {
+	host := os.Getenv("FIREBASE_AUTH_EMULATOR_HOST")
+	project := os.Getenv("FIREBASE_TEST_PROJECT")
+	if host == "" || project == "" {
+		t.Skip("FIREBASE_AUTH_EMULATOR_HOST and FIREBASE_TEST_PROJECT not set")
+	}
+	base := "http://" + host + "/identitytoolkit.googleapis.com/v1"
+	call := func(path string, body map[string]any) map[string]any {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer owner")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out := map[string]any{}
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return out
+	}
+	tag := fmt.Sprint(time.Now().UnixNano())
+	account := func(name string, admin bool) (uid, token string) {
+		email := "authtest-" + name + "-" + tag + "@example.test"
+		created := call("/accounts:signUp?key=x", map[string]any{"email": email, "password": "pw123456"})
+		uid, _ = created["localId"].(string)
+		t.Cleanup(func() { call("/projects/"+project+"/accounts:delete", map[string]any{"localId": uid}) })
+		if admin {
+			call("/projects/"+project+"/accounts:update", map[string]any{"localId": uid, "customAttributes": `{"admin":true}`})
+		}
+		signedIn := call("/accounts:signInWithPassword?key=x", map[string]any{"email": email, "password": "pw123456", "returnSecureToken": true})
+		token, _ = signedIn["idToken"].(string)
+		return uid, token
+	}
+	v := NewVerifier(Config{Mode: ModeDevStrict, FirebaseProjectID: project})
+	check := func(token string) (string, *HTTPError) {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/v1/admin/usage/daily", nil)
+		req.Header.Set(FirebaseTokenHeader, token)
+		return v.RequireAdmin(context.Background(), req)
+	}
+
+	adminUID, adminToken := account("admin", true)
+	if uid, err := check(adminToken); err != nil || uid != adminUID {
+		t.Fatalf("admin = %q, %v; want their uid", uid, err)
+	}
+	_, memberToken := account("member", false)
+	if _, err := check(memberToken); err == nil || err.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-admin = %v, want 403", err)
+	}
+	// Revocation is recorded to the second, so wait for it to postdate the token.
+	time.Sleep(1100 * time.Millisecond)
+	call("/projects/"+project+"/accounts:update", map[string]any{"localId": adminUID, "validSince": fmt.Sprint(time.Now().Unix())})
+	if _, err := check(adminToken); err == nil || err.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked admin = %v, want 401", err)
 	}
 }

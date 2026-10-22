@@ -42,6 +42,7 @@ Request body:
   "temperature": 0.7,
   "force_mock": false,
   "idempotency_key": "optional — also read from Idempotency-Key header, else generated",
+  "feature": "optional usage tag, e.g. next_line — unknown values are recorded as other",
   "byok_provider": "gemini | openai | anthropic | claude (optional)",
   "byok_api_key": "sk-... (optional)",
   "byok_model": "optional model override"
@@ -137,13 +138,31 @@ Includes the active provider: `{ "status": "ok", "provider": "mock", … }`
 
 ---
 
+## Admin routes (gateway)
+
+`GET /v1/admin/usage/daily`, `/v1/admin/usage/users`, `/v1/admin/usage/users/{userId}`, `/v1/admin/platform/today` and `/v1/admin/users/{userId}/balance` proxy to the ledger and usage services, forwarding only their documented query parameters. Each requires the normal caller check (OIDC in production) **and** a forwarded `X-Firebase-Token` verified with the revocation check and carrying `admin: true` (`401`/`403` otherwise; `dev` mode skips both, as for every route). Responses are aggregates only, with `Cache-Control: no-store`. `/v1/admin/platform/today` returns `{day, requests, requestLimit, credits, creditLimit, resetsAt}` from the two platform Redis counters. `/v1/admin/users/{userId}/balance` returns `{userId, hasBalance, availableCredits}` and, unlike the user-facing balance route, never grants `INITIAL_CREDITS`: an admin looking must not change the account.
+
 ## Ledger (`:8083`) — audit trail (Postgres)
 
 Append-only record of every credit event. Never affects balances — it's the reconciliation/audit source of truth. Schema is auto-applied at startup.
 
 ### `POST /v1/events`
 
-Body: `{ "idempotency_key", "user_id", "reservation_id"?, "event_type", "credits", "payload"? }`. Idempotent: replaying the same `idempotency_key` is a no-op upsert that returns the original row. Event types emitted by the gateway: `credits_reserved`, `credits_committed`, `credits_released`, `commit_failed`, `byok_generate`.
+Body: `{ "idempotency_key", "user_id", "reservation_id"?, "event_type", "credits", "payload"? }`. Idempotent: replaying the same `idempotency_key` is a no-op upsert that returns the original row. Event types emitted by the gateway: `credits_reserved`, `credits_committed`, `credits_committed_unknown`, `credits_released`, `commit_failed`, `byok_generate`, `byok_chat`, `local_generate`, `mock_chat` and `credits_purchased` (a top-up; `credits` is the amount minted).
+
+Every generate and chat event carries a `feature` in its payload: the request's `feature` tag, or `other`. Commit events also carry `model` and, when the provider reported usage, `actual_tokens` (`prompt_tokens`, `completion_tokens`, `total_tokens`). Chat settlement events (commit, release, commit_failed and the BYOK/local/mock audit events) carry `provider` and `model` whenever the stream reported them. Payloads never contain prompt or response text. Ledger writes are best-effort: the gateway never fails a request over one, and logs each lost write as `ledger_event_dropped`, so totals derived from the ledger are a lower bound.
+
+### `GET /v1/admin/usage/daily?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+Per UTC day, every day in the range present (quiet days are zeros): `platformRequests`, `byokRequests`, `failedRequests`, `unknownUsageRequests`, `credits`, `promptTokens`, `completionTokens`, `purchasedCredits`, `activeUsers`. A request is counted once, by its terminal event; `mock_chat` and `local_generate` are excluded. Defaults to the last 30 days; at most 90; `400` otherwise. Reached through the gateway route of the same path.
+
+### `GET /v1/admin/usage/users?from=&to=&sort=credits|requests&limit=&dailyLimit=`
+
+The heaviest users in a range (default 25, at most 100), ordered by credits or requests. Per user: `platformRequests`, `byokRequests`, `failedRequests`, `credits`, `tokens`, `purchasedCredits`, `activeDays`, `peakDayRequests`, `heavyDays` (days with at least `dailyLimit` platform requests, default 100) and `mostPurchasesInADay`. Users whose only events are mock or local calls are left out.
+
+### `GET /v1/admin/usage/users/{userId}?from=&to=`
+
+One user's daily series (the same shape as `/v1/admin/usage/daily`) plus `purchases`: their top-ups in the range, newest first, at most 50.
 
 ### `GET /v1/users/{userId}/ledger`
 

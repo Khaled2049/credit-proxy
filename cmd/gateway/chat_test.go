@@ -23,6 +23,7 @@ type chatStub struct {
 	commits      int
 	releases     int
 	ledgerEvents []string
+	ledger       []contracts.LedgerEventRequest
 
 	reserveStatus  int
 	reserveBody    string
@@ -35,6 +36,19 @@ func (c *chatStub) snapshot() (reserved, committed int64, commits, releases int)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.reserved, c.committed, c.commits, c.releases
+}
+
+func (c *chatStub) ledgerPayload(t *testing.T, eventType string) map[string]any {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, event := range c.ledger {
+		if event.EventType == eventType {
+			return event.Payload.(map[string]any)
+		}
+	}
+	t.Fatalf("no %s ledger event in %v", eventType, c.ledgerEvents)
+	return nil
 }
 
 func (c *chatStub) hasLedgerEvent(name string) bool {
@@ -115,6 +129,7 @@ func newChatStub(stub *chatStub) *httptest.Server {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			stub.mu.Lock()
 			stub.ledgerEvents = append(stub.ledgerEvents, req.EventType)
+			stub.ledger = append(stub.ledger, req)
 			stub.mu.Unlock()
 			httpx.WriteJSON(w, http.StatusOK, map[string]any{})
 
@@ -463,5 +478,99 @@ func TestChatRejectsOversizedSerializedInput(t *testing.T) {
 	}
 	if reserved, _, _, _ := stub.snapshot(); reserved != 0 {
 		t.Fatalf("reserved = %d, want no reservation", reserved)
+	}
+}
+
+func chatBody(t *testing.T, mutate func(*contracts.ChatRequest)) string {
+	t.Helper()
+	req := contracts.ChatRequest{
+		Version:         contracts.ChatContractVersion,
+		UserID:          "user123",
+		Messages:        []contracts.ChatMessage{{Role: contracts.RoleUser, Parts: []contracts.ChatPart{{Type: contracts.PartText, Text: "hello"}}}},
+		MaxOutputTokens: 1000,
+		Stream:          true,
+	}
+	mutate(&req)
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// The settlement payload carries what a usage report needs and nothing it
+// does not: feature, model and token split, never message text.
+func TestChatLedgerRecordsFeatureModelAndTokens(t *testing.T) {
+	stub := &chatStub{llmEvents: []string{
+		`{"type":"text_delta","provider":"gemini","model":"gemini-2.5-flash-lite","text":"hi"}`,
+		`{"type":"usage","provider":"gemini","model":"gemini-2.5-flash-lite","usage":{"prompt_tokens":200,"completion_tokens":250,"total_tokens":450}}`,
+		doneEvent,
+	}}
+	srv := newChatStub(stub)
+	defer srv.Close()
+	s := newChatServer(srv.URL)
+
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(chatBody(t, func(r *contracts.ChatRequest) {
+		r.Feature = "assistant_drafting"
+	}))))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if feature := stub.ledgerPayload(t, "credits_reserved")["feature"]; feature != "assistant_drafting" {
+		t.Errorf("reserve feature = %v", feature)
+	}
+	commit := stub.ledgerPayload(t, "credits_committed")
+	if commit["feature"] != "assistant_drafting" || commit["model"] != "gemini-2.5-flash-lite" || commit["provider"] != "gemini" {
+		t.Errorf("commit payload = %v", commit)
+	}
+	tokens, _ := commit["actual_tokens"].(map[string]any)
+	if tokens["prompt_tokens"] != float64(200) || tokens["completion_tokens"] != float64(250) {
+		t.Errorf("actual_tokens = %v, want 200/250", commit["actual_tokens"])
+	}
+	for key := range commit {
+		if key == "messages" || key == "text" {
+			t.Errorf("payload leaked %q", key)
+		}
+	}
+}
+
+func TestChatBufferedAndBYOKLedgerCarryModelAndFeature(t *testing.T) {
+	stub := &chatStub{}
+	srv := newChatStub(stub)
+	defer srv.Close()
+	s := newChatServer(srv.URL)
+
+	rr := httptest.NewRecorder()
+	s.handleChat(rr, httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(chatBody(t, func(r *contracts.ChatRequest) {
+		r.Stream = false
+		r.Feature = "not_a_feature"
+	}))))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("buffered status = %d: %s", rr.Code, rr.Body.String())
+	}
+	commit := stub.ledgerPayload(t, "credits_committed")
+	if commit["feature"] != "other" || commit["model"] != "mock" {
+		t.Errorf("buffered commit payload = %v, want feature other and model mock", commit)
+	}
+
+	rr = httptest.NewRecorder()
+	s.handleChat(rr, httptest.NewRequest(http.MethodPost, "/v1/chat", strings.NewReader(chatBody(t, func(r *contracts.ChatRequest) {
+		r.Stream = false
+		r.Feature = "assistant"
+		r.BYOKProvider, r.BYOKApiKey = "gemini", "user-key"
+	}))))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("byok status = %d: %s", rr.Code, rr.Body.String())
+	}
+	byok := stub.ledgerPayload(t, "byok_chat")
+	if byok["feature"] != "assistant" || byok["model"] != "mock" || byok["actual_tokens"] == nil {
+		t.Errorf("byok payload = %v", byok)
+	}
+	for _, event := range stub.ledger {
+		if strings.Contains(fmt.Sprint(event.Payload), "user-key") {
+			t.Fatalf("%s payload contains the BYOK key", event.EventType)
+		}
 	}
 }
