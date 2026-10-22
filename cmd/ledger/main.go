@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS ledger_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_events_user_created_at ON ledger_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_events_created_at ON ledger_events(created_at DESC);
 `
 
 type server struct {
@@ -60,6 +61,9 @@ func main() {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/users/", s.handleUserRoutes)
+	mux.HandleFunc("/v1/admin/usage/daily", s.handleAdminUsageDaily)
+	mux.HandleFunc("/v1/admin/usage/users", s.handleAdminUsageUsers)
+	mux.HandleFunc("/v1/admin/usage/users/", s.handleAdminUsageUser)
 
 	log.Printf("ledger listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))

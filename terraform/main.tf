@@ -492,7 +492,7 @@ resource "google_cloud_run_v2_service" "gateway" {
 
       env {
         name  = "GCP_ALLOWED_CALLER_SA"
-        value = "novelsync-agents-run@${var.project_id}.iam.gserviceaccount.com"
+        value = "novelsync-agents-run@${var.project_id}.iam.gserviceaccount.com,${var.firebase_functions_service_account}"
       }
 
       # Internal service URLs — stable after first deploy, injected directly from Terraform.
@@ -568,11 +568,29 @@ resource "google_cloud_run_v2_service" "gateway" {
   ]
 }
 
-# Only novelsync-agents may invoke the gateway through Cloud Run IAM.
+# novelsync-agents and the Firebase Functions runtime may invoke the gateway
+# through Cloud Run IAM. Functions only use the /v1/admin routes, which also
+# require an admin claim on the forwarded Firebase token.
 resource "google_cloud_run_v2_service_iam_member" "gateway_agents_invoker" {
   name     = google_cloud_run_v2_service.gateway.name
   location = var.region
   project  = var.project_id
   role     = "roles/run.invoker"
   member   = "serviceAccount:novelsync-agents-run@${var.project_id}.iam.gserviceaccount.com"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "gateway_functions_invoker" {
+  name     = google_cloud_run_v2_service.gateway.name
+  location = var.region
+  project  = var.project_id
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${var.firebase_functions_service_account}"
+}
+
+# The admin routes verify Firebase tokens with the revocation check, which looks
+# the user up in Firebase Auth; without this every admin request fails with 401.
+resource "google_project_iam_member" "run_sa_firebase_auth_viewer" {
+  project = var.project_id
+  role    = "roles/firebaseauth.viewer"
+  member  = "serviceAccount:${local.sa_email}"
 }

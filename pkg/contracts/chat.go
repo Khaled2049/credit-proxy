@@ -108,6 +108,10 @@ type ChatRequest struct {
 	EstimatedCredits int64  `json:"estimated_credits,omitempty"`
 	ForceMock        bool   `json:"force_mock,omitempty"`
 
+	// Feature names the product feature making the call, for usage reporting
+	// only. The gateway maps anything it does not recognise to "other".
+	Feature string `json:"feature,omitempty"`
+
 	// BYOK: when set the caller's own key is used and no platform credit is
 	// metered. Never logged, never echoed in a response.
 	BYOKProvider string `json:"byok_provider,omitempty"`

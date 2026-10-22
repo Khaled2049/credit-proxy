@@ -113,7 +113,9 @@ charges the estimate at reservation and reconciles on commit/release, so
 element. Keep `PLATFORM_DAILY_CREDIT_LIMIT` above the worst case the request cap
 already permits or it quietly becomes the real limit on `/v1/generate` too.
 
-**Ledger service (Postgres):** Append-only `ledger_events` table. Idempotency enforced via `ON CONFLICT (idempotency_key) DO UPDATE` (upsert is a no-op). Schema auto-applied at startup — no migration runner needed.
+**Ledger service (Postgres):** Append-only `ledger_events` table. Idempotency enforced via `ON CONFLICT (idempotency_key) DO UPDATE` (upsert is a no-op). Schema auto-applied at startup — no migration runner needed. Indexed by `(user_id, created_at)` and `created_at` for usage reporting.
+
+**Usage tags:** `GenerateRequest` and `ChatRequest` take an optional `feature`, which the gateway folds into a closed list (`cmd/gateway/feature.go`, KEEP IN SYNC with `USAGE_FEATURES` in taleTribe-agents) and records on every ledger event, along with the model and token split. It is reporting only and never affects billing. A gateway top-up writes `credits_purchased`. Admins read aggregates through `GET /v1/admin/usage/daily` (ledger) and `GET /v1/admin/platform/today` (usage); the gateway's `auth.RequireAdmin` checks the caller and a revocation-checked admin claim on the forwarded Firebase token before proxying. The Firebase Functions runtime is an allowed gateway caller for these routes. Ledger writes stay best-effort; a lost one logs `ledger_event_dropped`.
 
 **Chat providers:** LiteLLM translates Gemini, OpenAI, and Anthropic into the
 same normalized streaming/tool-call contract. The mock still replays fixtures

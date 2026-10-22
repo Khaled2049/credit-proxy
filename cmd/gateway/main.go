@@ -88,6 +88,11 @@ func main() {
 	mux.HandleFunc("/v1/providers/validate", s.handleProviderValidation)
 	mux.HandleFunc("/v1/users/", s.handleUserBalance)
 	mux.HandleFunc("/v1/credits/purchase", s.handlePurchase)
+	mux.HandleFunc("/v1/admin/usage/daily", s.handleAdminUsageDaily)
+	mux.HandleFunc("/v1/admin/platform/today", s.handleAdminPlatformToday)
+	mux.HandleFunc("/v1/admin/usage/users", s.handleAdminUsageUsers)
+	mux.HandleFunc("/v1/admin/usage/users/", s.handleAdminUsageUser)
+	mux.HandleFunc("/v1/admin/users/", s.handleAdminUserBalance)
 
 	log.Printf("gateway listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
@@ -185,6 +190,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	reqID := ids.New("req")
 
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
+	feature := usageFeature(req.Feature)
 
 	if !isBYOK && !req.ForceMock && !s.platformInferenceEnabled {
 		http.Error(w, "platform inference is disabled (ref "+reqID+")", http.StatusServiceUnavailable)
@@ -215,7 +221,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			ReservationID:  reservationID,
 			EventType:      "credits_reserved",
 			Credits:        estimatedCredits,
-			Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTokens},
+			Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTokens, "feature": feature},
 		})
 	}
 
@@ -245,7 +251,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				ReservationID:  reservationID,
 				EventType:      "credits_released",
 				Credits:        estimatedCredits,
-				Payload:        map[string]any{"reason": "llm_failure"},
+				Payload:        map[string]any{"reason": "llm_failure", "feature": feature},
 			})
 		}
 		log.Printf("llm proxy failed req=%s user=%s byok=%t: %v", reqID, billingUserID, isBYOK, err)
@@ -265,7 +271,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				ReservationID:  reservationID,
 				EventType:      "commit_failed",
 				Credits:        actualCredits,
-				Payload:        map[string]any{"error": err.Error()},
+				Payload:        map[string]any{"error": err.Error(), "feature": feature},
 			})
 			log.Printf("commit reservation failed req=%s user=%s res=%s: %v", reqID, billingUserID, reservationID, err)
 			http.Error(w, "commit reservation failed (ref "+reqID+")", http.StatusConflict)
@@ -288,6 +294,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			"actual_tokens":     genResp.Usage,
 			"model":             genResp.Model,
 			"byok":              isBYOK,
+			"feature":           feature,
 		},
 	})
 
@@ -364,6 +371,14 @@ func (s *server) handlePurchase(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unable to purchase credits (ref "+reqID+")", classifyPurchaseStatus(err))
 		return
 	}
+	// The usage service is reachable only through this proxy, so this is the one
+	// place a top-up can be recorded.
+	_ = s.emitLedgerEvent(r.Context(), contracts.LedgerEventRequest{
+		IdempotencyKey: ids.New("purchase"),
+		UserID:         billingUserID,
+		EventType:      "credits_purchased",
+		Credits:        req.Credits,
+	})
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
@@ -377,8 +392,14 @@ func (s *server) releaseReservation(ctx context.Context, userID, reservationID, 
 	return httpx.PostJSON(ctx, s.client, url, contracts.ReleaseReservationRequest{Reason: reason}, &map[string]any{}, nil)
 }
 
+// emitLedgerEvent is best-effort: callers never fail a request over it. A lost
+// event is logged with a stable prefix so usage reports can measure the gap.
 func (s *server) emitLedgerEvent(ctx context.Context, event contracts.LedgerEventRequest) error {
-	return httpx.PostJSON(ctx, s.client, s.ledgerURL+"/v1/events", event, &map[string]any{}, nil)
+	err := httpx.PostJSON(ctx, s.client, s.ledgerURL+"/v1/events", event, &map[string]any{}, nil)
+	if err != nil {
+		log.Printf("ledger_event_dropped type=%s user=%s key=%s: %v", event.EventType, event.UserID, event.IdempotencyKey, err)
+	}
+	return err
 }
 
 func getenv(key, fallback string) string {

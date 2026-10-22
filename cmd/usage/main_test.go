@@ -462,3 +462,66 @@ func TestCommit_ConcurrentOveragesSettleExactly(t *testing.T) {
 		t.Fatalf("platform credits = %s, want 1300", got)
 	}
 }
+
+func TestAdminPlatformTodayReportsBothCaps(t *testing.T) {
+	s, mr := newTestServer(t, 1400)
+	s.platformCreditLimit = 150000
+	day := time.Now().UTC().Format("2006-01-02")
+
+	read := func() PlatformToday {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.handleAdminPlatformToday(w, httptest.NewRequest(http.MethodGet, "/v1/admin/platform/today", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		var out PlatformToday
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// Before the first request of the day neither key exists yet.
+	if got := read(); got.Requests != 0 || got.Credits != 0 || got.RequestLimit != 1400 || got.CreditLimit != 150000 || got.Day != day {
+		t.Fatalf("empty day = %+v", got)
+	}
+	mr.Set("platform:daily:"+day, "37")
+	mr.Set(platformCreditsKey(day), "5120")
+	got := read()
+	if got.Requests != 37 || got.Credits != 5120 {
+		t.Errorf("counters = %+v, want 37 requests and 5120 credits", got)
+	}
+	resets, err := time.Parse(time.RFC3339, got.ResetsAt)
+	if err != nil || resets.Format("2006-01-02") == day || resets.Hour() != 0 {
+		t.Errorf("resetsAt = %q, want the next UTC midnight", got.ResetsAt)
+	}
+}
+
+func TestAdminUserBalanceNeverGrantsCredits(t *testing.T) {
+	s, mr := newTestServer(t, 1400)
+	s.initialCredits = 10000
+	read := func(path string) (int, AdminBalance) {
+		w := httptest.NewRecorder()
+		s.handleAdminUserBalance(w, httptest.NewRequest(http.MethodGet, path, nil))
+		var out AdminBalance
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	if code, got := read("/v1/admin/users/new-user/balance"); code != http.StatusOK || got.HasBalance {
+		t.Fatalf("new user = %d %+v, want 200 without a balance", code, got)
+	}
+	if mr.Exists(userCreditsKey("new-user")) {
+		t.Fatal("an admin read granted the initial credits")
+	}
+	mr.Set(userCreditsKey("known"), "742")
+	if _, got := read("/v1/admin/users/known/balance"); !got.HasBalance || got.AvailableCredits != 742 {
+		t.Errorf("known user = %+v, want 742", got)
+	}
+	for _, path := range []string{"/v1/admin/users//balance", "/v1/admin/users/a/b/balance", "/v1/admin/users/known"} {
+		if code, _ := read(path); code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", path, code)
+		}
+	}
+}

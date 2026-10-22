@@ -284,6 +284,9 @@ components:
         idempotency_key: { type: string }
         estimated_credits: { type: integer, format: int64 }
         force_mock: { type: boolean }
+        feature:
+          type: string
+          description: Optional usage-reporting tag naming the product feature making the call. One of next_line, enhance, brainstorm, story_choices, wizard_enhance, summarize, assistant, assistant_specialist, assistant_drafting, other; anything else is recorded as other. Never affects billing.
         byok_provider:
           type: string
           enum: [gemini, claude, openai]
@@ -423,6 +426,9 @@ components:
         idempotency_key:
           type: string
           description: Deduplicates ledger events; falls back to the Idempotency-Key header, else auto-generated.
+        feature:
+          type: string
+          description: Optional usage-reporting tag naming the product feature making the call. One of next_line, enhance, brainstorm, story_choices, wizard_enhance, summarize, assistant, assistant_specialist, assistant_drafting, other; anything else is recorded as other. Never affects billing.
         byok_provider:
           type: string
           enum: [gemini, openai, anthropic, claude]
