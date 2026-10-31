@@ -115,6 +115,7 @@ async def generate(request: GenerateRequest) -> dict[str, Any]:
         byok_provider=request.byok_provider,
         byok_api_key=request.byok_api_key,
         byok_model=request.byok_model,
+        route_alias=request.route_alias,
     )
     try:
         _, selected, _, _ = request_identity(chat)

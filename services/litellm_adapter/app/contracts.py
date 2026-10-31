@@ -20,6 +20,7 @@ class GenerateRequest(BaseModel):
     byok_provider: str = ""
     byok_api_key: str = ""
     byok_model: str = ""
+    route_alias: str = ""
 
 
 class GenerateResponse(BaseModel):
@@ -67,6 +68,7 @@ class ChatRequest(BaseModel):
     byok_provider: str = ""
     byok_api_key: str = ""
     byok_model: str = ""
+    route_alias: str = ""
 
 
 class ValidateRequest(BaseModel):

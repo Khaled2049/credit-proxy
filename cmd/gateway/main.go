@@ -190,6 +190,10 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	reqID := ids.New("req")
 
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
+	if !validRouteAlias(req.RouteAlias) {
+		http.Error(w, "invalid route alias", http.StatusBadRequest)
+		return
+	}
 	feature := usageFeature(req.Feature)
 
 	if !isBYOK && !req.ForceMock && !s.platformInferenceEnabled {
@@ -221,7 +225,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			ReservationID:  reservationID,
 			EventType:      "credits_reserved",
 			Credits:        estimatedCredits,
-			Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTokens, "feature": feature},
+			Payload:        map[string]any{"prompt_tokens": promptToks, "estimated_total_tokens": estimatedTokens, "feature": feature, "route_alias": req.RouteAlias},
 		})
 	}
 
@@ -236,6 +240,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		BYOKProvider:    req.BYOKProvider,
 		BYOKApiKey:      req.BYOKApiKey,
 		BYOKModel:       req.BYOKModel,
+		RouteAlias:      req.RouteAlias,
 	}
 	var llmHeaders map[string]string
 	if s.internalToken != "" {
@@ -295,6 +300,7 @@ func (s *server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			"model":             genResp.Model,
 			"byok":              isBYOK,
 			"feature":           feature,
+			"route_alias":       req.RouteAlias,
 		},
 	})
 

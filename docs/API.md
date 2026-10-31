@@ -124,6 +124,16 @@ can be overridden per request:
 - `force_mock: true` → mock provider
 - `byok_provider` + `byok_api_key` → request-scoped provider credentials (`gemini`, `openai`, `anthropic`/legacy `claude`)
 
+`route_alias` is an optional task route on both generate and chat requests. The
+gateway accepts only `prose_draft_v1`, `prose_rewrite_v1`, `next_line_v1`, and
+`voice_analysis_v1`; unknown values return `400` before a reservation. The
+adapter maps these to `ROUTE_PROSE_DRAFT_MODEL`, `ROUTE_PROSE_REWRITE_MODEL`,
+`ROUTE_NEXT_LINE_MODEL`, and `ROUTE_VOICE_ANALYSIS_MODEL`, respectively. Each
+value uses the curated `provider/model` form; an unset task route falls back
+to `PLATFORM_MODEL` and then the existing provider default. BYOK always uses
+the writer's selected provider and model, regardless of alias. The `feature`
+field remains a usage label and does not select a model.
+
 The adapter also exposes `GET /v1/providers` for the curated catalog and
 `POST /v1/providers/validate` for a one-token key/model validation. Both require
 the internal service token; the gateway exposes corresponding authenticated routes.

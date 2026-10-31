@@ -9,7 +9,7 @@ from app.catalog import litellm_model
 from app.main import app
 from app.mock import mock_events
 from app.contracts import ChatRequest
-from app.provider import AdapterError, estimated_usage
+from app.provider import AdapterError, estimated_usage, request_identity
 
 
 def request_payload(**overrides):
@@ -35,6 +35,20 @@ def test_catalog_resolves_legacy_anthropic_alias():
 def test_catalog_rejects_models_outside_curated_allowlist():
     with pytest.raises(ValueError):
         litellm_model("openai", "made-up-model")
+
+
+def test_platform_route_is_configured_and_byok_takes_precedence(monkeypatch):
+    monkeypatch.setenv("PLATFORM_MODEL", "gemini/gemini-2.5-flash")
+    monkeypatch.setenv("ROUTE_NEXT_LINE_MODEL", "gemini/gemini-2.5-flash-lite")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-platform-key")
+    request = ChatRequest.model_validate(request_payload(route_alias="next_line_v1"))
+    assert request_identity(request)[:2] == ("gemini", "gemini-2.5-flash-lite")
+    byok = request.model_copy(update={"byok_provider": "anthropic", "byok_api_key": "writer-key", "byok_model": "claude-sonnet-4-6"})
+    assert request_identity(byok)[:2] == ("anthropic", "claude-sonnet-4-6")
+    monkeypatch.setenv("ROUTE_NEXT_LINE_MODEL", "not-a-provider-model")
+    with pytest.raises(AdapterError):
+        request_identity(request)
+    assert request_identity(byok)[:2] == ("anthropic", "claude-sonnet-4-6")
 
 
 def test_catalog_endpoint_requires_internal_token(monkeypatch):

@@ -45,8 +45,21 @@ def classify_error(error: Exception) -> AdapterError:
     return AdapterError(502, "provider_error", True)
 
 
-def _platform_identity() -> tuple[str, str, str, str]:
-    configured = os.getenv("PLATFORM_MODEL", "").strip()
+ROUTE_ENV = {
+    "prose_draft_v1": "ROUTE_PROSE_DRAFT_MODEL",
+    "prose_rewrite_v1": "ROUTE_PROSE_REWRITE_MODEL",
+    "next_line_v1": "ROUTE_NEXT_LINE_MODEL",
+    "voice_analysis_v1": "ROUTE_VOICE_ANALYSIS_MODEL",
+}
+
+
+def _platform_identity(route_alias: str = "") -> tuple[str, str, str, str]:
+    if route_alias and route_alias not in ROUTE_ENV:
+        raise AdapterError(400, "invalid_route_alias", False)
+    task_model = os.getenv(ROUTE_ENV[route_alias], "").strip() if route_alias else ""
+    if task_model and "/" not in task_model:
+        raise AdapterError(503, "provider_unavailable", True)
+    configured = task_model or os.getenv("PLATFORM_MODEL", "").strip()
     if configured and "/" in configured:
         provider, model = configured.split("/", 1)
     else:
@@ -87,7 +100,7 @@ def request_identity(request: ChatRequest) -> tuple[str, str, str, str]:
         except ValueError:
             raise AdapterError(400, "invalid_request", False) from None
         return canonical, selected, routed, request.byok_api_key
-    return _platform_identity()
+    return _platform_identity(request.route_alias)
 
 
 def _message(message: ChatMessage) -> dict[str, Any]:

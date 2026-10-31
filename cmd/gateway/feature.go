@@ -12,6 +12,7 @@ var usageFeatures = map[string]bool{
 	"assistant":            true,
 	"assistant_specialist": true,
 	"assistant_drafting":   true,
+	"voice_analysis":       true,
 	"other":                true,
 }
 
