@@ -8,6 +8,13 @@
       "default_model": "gemini-2.5-flash",
       "models": [
         {
+          "id": "gemini-3.5-flash-lite",
+          "label": "Gemini 3.5 Flash Lite",
+          "description": "Platform default: fast, low cost, and answers without a thinking step.",
+          "tier": "economy",
+          "capabilities": ["text", "tools", "streaming"]
+        },
+        {
           "id": "gemini-2.5-flash-lite",
           "label": "Gemini 2.5 Flash Lite",
           "description": "Lowest latency and cost for lightweight writing tasks.",
