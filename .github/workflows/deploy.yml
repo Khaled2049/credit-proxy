@@ -156,12 +156,12 @@ jobs:
             -var="usage_image=${REGISTRY}/usage:${INPUT_GITHUB_SHA}" \
             -var="llmproxy_image=${REGISTRY}/llmproxy:${INPUT_GITHUB_SHA}" \
             -var="ledger_image=${REGISTRY}/ledger:${INPUT_GITHUB_SHA}" \
-            -var="gemini_model=${INPUT_VARS_GEMINI_MODEL_GEMINI_2_5_FLASH_LITE}" \
+            -var="gemini_model=${INPUT_VARS_GEMINI_MODEL}" \
             -out=tfplan
 
         env:
           INPUT_GITHUB_SHA: ${{ github.sha }}
-          INPUT_VARS_GEMINI_MODEL_GEMINI_2_5_FLASH_LITE: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
+          INPUT_VARS_GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash-lite' }}
       - name: Terraform Apply
         working-directory: ./terraform
         run: terraform apply -auto-approve tfplan
