@@ -102,6 +102,30 @@ variable "gemini_model" {
   default     = "gemini-3.5-flash-lite"
 }
 
+variable "route_prose_draft_model" {
+  description = "Optional provider/model override for the prose_draft_v1 task route"
+  type        = string
+  default     = ""
+}
+
+variable "route_prose_rewrite_model" {
+  description = "Optional provider/model override for the prose_rewrite_v1 task route"
+  type        = string
+  default     = ""
+}
+
+variable "route_next_line_model" {
+  description = "Optional provider/model override for the next_line_v1 task route"
+  type        = string
+  default     = ""
+}
+
+variable "route_voice_analysis_model" {
+  description = "Optional provider/model override for the voice_analysis_v1 task route"
+  type        = string
+  default     = ""
+}
+
 variable "initial_credits" {
   description = "Free credits granted to new users on first AI call"
   type        = string
