@@ -261,6 +261,26 @@ resource "google_cloud_run_v2_service" "llmproxy" {
       }
 
       env {
+        name  = "ROUTE_PROSE_DRAFT_MODEL"
+        value = var.route_prose_draft_model
+      }
+
+      env {
+        name  = "ROUTE_PROSE_REWRITE_MODEL"
+        value = var.route_prose_rewrite_model
+      }
+
+      env {
+        name  = "ROUTE_NEXT_LINE_MODEL"
+        value = var.route_next_line_model
+      }
+
+      env {
+        name  = "ROUTE_VOICE_ANALYSIS_MODEL"
+        value = var.route_voice_analysis_model
+      }
+
+      env {
         name  = "OPENAI_MODEL"
         value = "gpt-4o-mini"
       }

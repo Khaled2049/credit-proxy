@@ -86,6 +86,10 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	reqID := ids.New("req")
 	isBYOK := req.BYOKProvider != "" && req.BYOKApiKey != ""
+	if !validRouteAlias(req.RouteAlias) {
+		writeChatError(w, http.StatusBadRequest, "invalid_route_alias", reqID)
+		return
+	}
 	feature := usageFeature(req.Feature)
 
 	// Four billing modes, and only one of them touches credits. "local" is a
@@ -138,7 +142,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			ReservationID:  reservationID,
 			EventType:      "credits_reserved",
 			Credits:        estimatedCredits,
-			Payload:        map[string]any{"prompt_tokens": promptTokens, "estimated_total_tokens": estimatedTokens, "surface": "chat", "feature": feature},
+			Payload:        map[string]any{"prompt_tokens": promptTokens, "estimated_total_tokens": estimatedTokens, "surface": "chat", "feature": feature, "route_alias": req.RouteAlias},
 		})
 	}
 
@@ -161,6 +165,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			billing:          billing,
 			estimatedCredits: estimatedCredits,
 			feature:          feature,
+			routeAlias:       req.RouteAlias,
 		})
 		return
 	}
@@ -237,6 +242,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		actualCredits:    actualCredits,
 		estimatedCredits: estimatedCredits,
 		feature:          feature,
+		routeAlias:       req.RouteAlias,
 		provider:         provider,
 		model:            model,
 		usage:            usage,
@@ -307,16 +313,18 @@ type settleParams struct {
 	estimatedCredits int64
 
 	// Reporting only; none of these affect what is billed.
-	feature  string
-	provider string
-	model    string
-	usage    *contracts.GenerateUsage
+	feature    string
+	routeAlias string
+	provider   string
+	model      string
+	usage      *contracts.GenerateUsage
 }
 
 // ledgerPayload adds the reporting fields to a settlement event's payload.
 func (p settleParams) ledgerPayload(fields map[string]any) map[string]any {
 	fields["surface"] = "chat"
 	fields["feature"] = p.feature
+	fields["route_alias"] = p.routeAlias
 	if p.model != "" {
 		fields["provider"] = p.provider
 		fields["model"] = p.model

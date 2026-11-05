@@ -111,6 +111,8 @@ type ChatRequest struct {
 	// Feature names the product feature making the call, for usage reporting
 	// only. The gateway maps anything it does not recognise to "other".
 	Feature string `json:"feature,omitempty"`
+	// RouteAlias is an allowlisted platform task. BYOK always takes precedence.
+	RouteAlias string `json:"route_alias,omitempty"`
 
 	// BYOK: when set the caller's own key is used and no platform credit is
 	// metered. Never logged, never echoed in a response.

@@ -286,7 +286,11 @@ components:
         force_mock: { type: boolean }
         feature:
           type: string
-          description: Optional usage-reporting tag naming the product feature making the call. One of next_line, enhance, brainstorm, story_choices, wizard_enhance, summarize, assistant, assistant_specialist, assistant_drafting, other; anything else is recorded as other. Never affects billing.
+          description: Optional usage-reporting tag. Includes voice_analysis; unknown values are recorded as other. Does not select a model.
+        route_alias:
+          type: string
+          enum: [prose_draft_v1, prose_rewrite_v1, next_line_v1, voice_analysis_v1]
+          description: Server-configured platform task route. BYOK selection takes precedence.
         byok_provider:
           type: string
           enum: [gemini, claude, openai]
@@ -428,7 +432,11 @@ components:
           description: Deduplicates ledger events; falls back to the Idempotency-Key header, else auto-generated.
         feature:
           type: string
-          description: Optional usage-reporting tag naming the product feature making the call. One of next_line, enhance, brainstorm, story_choices, wizard_enhance, summarize, assistant, assistant_specialist, assistant_drafting, other; anything else is recorded as other. Never affects billing.
+          description: Optional usage-reporting tag. Includes voice_analysis; unknown values are recorded as other. Does not select a model.
+        route_alias:
+          type: string
+          enum: [prose_draft_v1, prose_rewrite_v1, next_line_v1, voice_analysis_v1]
+          description: Server-configured platform task route. BYOK selection takes precedence.
         byok_provider:
           type: string
           enum: [gemini, openai, anthropic, claude]

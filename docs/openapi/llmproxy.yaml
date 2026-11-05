@@ -214,6 +214,7 @@ components:
         idempotency_key: { type: string }
         estimated_credits: { type: integer, format: int64 }
         force_mock: { type: boolean }
+        route_alias: { type: string, enum: [prose_draft_v1, prose_rewrite_v1, next_line_v1, voice_analysis_v1] }
         byok_provider:
           type: string
           enum: [gemini, claude, openai]
@@ -342,6 +343,7 @@ components:
           description: Passed through by the gateway for correlation; unused here.
         idempotency_key:
           type: string
+        route_alias: { type: string, enum: [prose_draft_v1, prose_rewrite_v1, next_line_v1, voice_analysis_v1] }
         byok_provider:
           type: string
           enum: [gemini, openai, anthropic, claude]
