@@ -61,8 +61,8 @@ data "google_secret_manager_secret" "upstash_redis_url" {
 }
 
 # ── Secret Manager — Postgres DSN managed by workflow ────────────────────────
-# Shell and version are created by deploy.yml (same pattern as API keys).
-# Terraform reads it as a data source to apply IAM — never sees the raw value.
+# The ledger login's URL. The shell predates Terraform; its versions are
+# written by database.tf (write-only, so never in state).
 
 data "google_secret_manager_secret" "postgres_dsn" {
   secret_id = "creditproxy-postgres-dsn"
@@ -410,6 +410,12 @@ resource "google_cloud_run_v2_service" "ledger" {
         value = ":8080"
       }
 
+      # The deploy migrates as the owner first; this login cannot.
+      env {
+        name  = "MIGRATE_ON_START"
+        value = "false"
+      }
+
       env {
         name = "POSTGRES_DSN"
         value_source {
@@ -449,9 +455,12 @@ resource "google_cloud_run_v2_service" "ledger" {
     percent = 100
   }
 
+  # The revision must start after its login and URL exist.
   depends_on = [
     google_project_service.run,
     google_secret_manager_secret_iam_member.run_sa_secret_access,
+    google_secret_manager_secret_version.ledger_dsn,
+    postgresql_grant_role.ledger,
   ]
 }
 
