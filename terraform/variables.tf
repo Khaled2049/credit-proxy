@@ -189,3 +189,9 @@ variable "firebase_functions_service_account" {
   type        = string
   default     = "novelsync-functions@story-6f89f.iam.gserviceaccount.com"
 }
+
+variable "db_password_version" {
+  description = "Bump to rotate the ledger database login's password; the role and creditproxy-postgres-dsn change in the same apply."
+  type        = number
+  default     = 1
+}

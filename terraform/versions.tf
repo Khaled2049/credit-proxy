@@ -1,5 +1,7 @@
 terraform {
-  required_version = ">= 1.5.0"
+  # Ephemeral resources and write-only arguments keep database passwords out
+  # of state (database.tf).
+  required_version = ">= 1.11.0"
 
   backend "gcs" {
     bucket = "story-6f89f-tfstate"
@@ -9,7 +11,15 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 5.0"
+      version = "~> 8.11"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.9"
+    }
+    postgresql = {
+      source  = "cyrilgdn/postgresql"
+      version = "~> 1.27"
     }
   }
 }

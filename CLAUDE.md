@@ -113,7 +113,7 @@ charges the estimate at reservation and reconciles on commit/release, so
 element. Keep `PLATFORM_DAILY_CREDIT_LIMIT` above the worst case the request cap
 already permits or it quietly becomes the real limit on `/v1/generate` too.
 
-**Ledger service (Postgres):** Append-only `ledger_events` table. Idempotency enforced via `ON CONFLICT (idempotency_key) DO UPDATE` (upsert is a no-op). Schema auto-applied at startup — no migration runner needed. Indexed by `(user_id, created_at)` and `created_at` for usage reporting.
+**Ledger service (Postgres):** Append-only `ledger_events` table. Idempotency enforced via `ON CONFLICT (idempotency_key) DO UPDATE` (upsert is a no-op). The schema and its grants live in `cmd/ledger/db.go` and are idempotent. Locally they apply at startup; in production the deploy runs `ledger migrate` as the Neon owner, and the service runs as `creditproxy_ledger`, which may only insert and read (see `docs/ledger-database.md`). A new query that needs another privilege needs a grant there. Indexed by `(user_id, created_at)` and `created_at` for usage reporting.
 
 **Usage tags:** `GenerateRequest` and `ChatRequest` take an optional `feature`, which the gateway folds into a closed list (`cmd/gateway/feature.go`, KEEP IN SYNC with `USAGE_FEATURES` in taleTribe-agents) and records on every ledger event, along with the model and token split. It is reporting only and never affects billing. A gateway top-up writes `credits_purchased`. Admins read aggregates through `GET /v1/admin/usage/daily` (ledger) and `GET /v1/admin/platform/today` (usage); the gateway's `auth.RequireAdmin` checks the caller and a revocation-checked admin claim on the forwarded Firebase token before proxying. The Firebase Functions runtime is an allowed gateway caller for these routes. Ledger writes stay best-effort; a lost one logs `ledger_event_dropped`.
 
@@ -151,6 +151,7 @@ credential checks use `/v1/providers` and `/v1/providers/validate`.
 | `LEDGER_ADDR` | `:8083` | |
 | `REDIS_URL` | `redis://redis:6379` | |
 | `POSTGRES_DSN` | `postgres://postgres:postgres@postgres:5432/creditproxy?sslmode=disable` | |
+| `MIGRATE_ON_START` | `true` | `false` in production: skip schema setup and refuse an over-privileged login instead |
 | `LLM_PROVIDER` | `mock` | Provider: `gemini`, `openai`, `anthropic`, `mock`. |
 | `PLATFORM_MODEL` | `""` | Optional `provider/model` platform default. |
 | `INITIAL_CREDITS` | `10000` | Free tokens granted to new users on their first reservation (atomic `SetNX`) |

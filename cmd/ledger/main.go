@@ -16,21 +16,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-const schemaSQL = `
-CREATE TABLE IF NOT EXISTS ledger_events (
-  id BIGSERIAL PRIMARY KEY,
-  idempotency_key TEXT NOT NULL UNIQUE,
-  user_id TEXT NOT NULL,
-  reservation_id TEXT,
-  event_type TEXT NOT NULL,
-  credits BIGINT NOT NULL,
-  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_ledger_events_user_created_at ON ledger_events(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ledger_events_created_at ON ledger_events(created_at DESC);
-`
-
 type server struct {
 	db *sql.DB
 }
@@ -52,8 +37,23 @@ func main() {
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatalf("ping db: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
-		log.Fatalf("ensure schema: %v", err)
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
+			log.Fatalf("migrate: %v", err)
+		}
+		log.Print("ledger schema and grants applied")
+		return
+	}
+	migrateOnStart, err := parseBool(getenv("MIGRATE_ON_START", "true"))
+	if err != nil {
+		log.Fatalf("MIGRATE_ON_START: %v", err)
+	}
+	if migrateOnStart {
+		if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
+			log.Fatalf("ensure schema: %v", err)
+		}
+	} else if err := checkServingRole(ctx, db); err != nil {
+		log.Fatal(err)
 	}
 
 	s := &server{db: db}

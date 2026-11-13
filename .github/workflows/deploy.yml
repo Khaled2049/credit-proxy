@@ -127,7 +127,9 @@ jobs:
           create_or_update_secret "creditproxy-openai-api-key"    "${INPUT_SECRETS_OPENAI_API_KEY}"
           create_or_update_secret "creditproxy-anthropic-api-key" "${INPUT_SECRETS_ANTHROPIC_API_KEY}"
           create_or_update_secret "creditproxy-upstash-redis-url" "${INPUT_SECRETS_UPSTASH_REDIS_URL}"
-          create_or_update_secret "creditproxy-postgres-dsn"      "${INPUT_SECRETS_NEON_DATABASE_URL}"
+          # Owner URL: read by the migrate step and Terraform only. The ledger's
+          # own URL (creditproxy-postgres-dsn) is written by terraform/database.tf.
+          create_or_update_secret "creditproxy-postgres-owner-dsn" "${INPUT_SECRETS_NEON_DATABASE_URL}"
           create_or_update_secret "creditproxy-internal-service-token" "${INPUT_SECRETS_INTERNAL_SERVICE_TOKEN}"
 
         env:
@@ -137,6 +139,16 @@ jobs:
           INPUT_SECRETS_UPSTASH_REDIS_URL: ${{ secrets.UPSTASH_REDIS_URL }}
           INPUT_SECRETS_NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
           INPUT_SECRETS_INTERNAL_SERVICE_TOKEN: ${{ secrets.INTERNAL_SERVICE_TOKEN }}
+      # Applies the schema and the creditproxy_ledger_app group as the owner,
+      # before Terraform joins the login to that group.
+      - name: Migrate the ledger database
+        run: |
+          REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}"
+          docker run --rm -e POSTGRES_DSN "${REGISTRY}/ledger:${INPUT_GITHUB_SHA}" migrate
+        env:
+          INPUT_GITHUB_SHA: ${{ github.sha }}
+          POSTGRES_DSN: ${{ secrets.NEON_DATABASE_URL }}
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3
         with:
