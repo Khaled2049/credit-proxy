@@ -53,6 +53,10 @@ resource "postgresql_role" "ledger" {
   login               = true
   password_wo         = ephemeral.random_password.ledger.result
   password_wo_version = var.db_password_version
+  # Membership belongs to postgresql_grant_role; without this the next apply revokes it.
+  lifecycle {
+    ignore_changes = [roles]
+  }
 }
 
 resource "postgresql_grant_role" "ledger" {
