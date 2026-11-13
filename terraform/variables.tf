@@ -187,5 +187,5 @@ variable "platform_inference_enabled" {
 variable "firebase_functions_service_account" {
   description = "Firebase Functions runtime identity allowed to call the gateway."
   type        = string
-  default     = "793308156964-compute@developer.gserviceaccount.com"
+  default     = "novelsync-functions@story-6f89f.iam.gserviceaccount.com"
 }
